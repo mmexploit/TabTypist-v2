@@ -8,107 +8,90 @@ mod settings_store;
 mod telemetry;
 
 use anyhow::{Context, Result};
-use completion_engine::{CompletionContext, CompletionEngine};
-use exclusion_engine::{ExclusionConfig, ExclusionEngine};
+use completion_engine::CompletionContext;
+use exclusion_engine::ExclusionEngine;
 use ipc::{IpcTransport, RpcMessage};
 use language_router::LanguageRouter;
 use model_downloader::{ModelCatalog, ModelDownloader};
 use settings_store::SettingsStore;
 use std::sync::Arc;
 use telemetry::{TelemetryClient, TelemetryEvent};
-use tokio::process::Command;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
+
+// The Rust core runs as a subprocess of the Swift app.
+// The Swift app connects our stdin/stdout as a bidirectional JSON-RPC pipe.
+// We read from stdin, write to stdout — no subprocess spawning here.
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr) // never pollute stdout (the IPC channel)
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("tabtypist_core=info".parse().unwrap()),
         )
         .init();
 
+    info!("TabTypist core starting (stdin→stdout IPC mode)");
+
     let settings = SettingsStore::load()?;
-    info!("TabTypist core starting");
 
-    // Determine sidecar path.
-    let sidecar_path = sidecar_binary_path()?;
-    info!("spawning sidecar at {sidecar_path:?}");
+    // IPC: read from our stdin, write to our stdout.
+    let transport = Arc::new(Mutex::new(IpcTransport::from_stdout()));
+    let mut incoming = ipc::spawn_reader(tokio::io::stdin());
 
-    // Spawn the Swift sidecar.
-    let mut child = Command::new(&sidecar_path)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .with_context(|| format!("spawning sidecar {sidecar_path:?}"))?;
-
-    let stdin = child.stdin.take().context("sidecar stdin")?;
-    let stdout = child.stdout.take().context("sidecar stdout")?;
-
-    let mut transport = IpcTransport::new(stdin);
-    let mut incoming = ipc::spawn_reader(stdout);
-
-    // Handshake: ping/pong.
-    let ping_id = transport
-        .request("ping", serde_json::json!({}))
-        .await?;
-
+    // Handshake: wait for ping from Swift, reply pong.
     match incoming.recv().await {
-        Some(msg) if msg.result == Some(serde_json::json!("pong")) => {
-            info!("IPC handshake OK (ping id={ping_id})");
+        Some(msg) if msg.method.as_deref() == Some("ping") => {
+            let id = msg.id.unwrap_or(0);
+            transport.lock().await.respond(id, serde_json::json!("pong")).await?;
+            info!("IPC handshake OK (ping id={id})");
         }
         other => {
-            warn!("unexpected response to ping: {other:?}");
+            warn!("expected ping, got: {other:?}");
         }
     }
 
-    // Load the English model (if installed).
+    // Load the English model if already installed.
     let models_dir = model_downloader::models_dir()?;
     let ed25519_pubkey = include_bytes!("../../../Resources/ed25519_pubkey.bin");
-    let downloader = ModelDownloader::new(models_dir, *ed25519_pubkey);
+    let downloader = Arc::new(ModelDownloader::new(models_dir, *ed25519_pubkey));
 
-    let mut router = LanguageRouter::new();
+    // Wrap router in a Mutex so it can be updated after a model download completes.
+    let router: Arc<Mutex<LanguageRouter>> = Arc::new(Mutex::new(LanguageRouter::new()));
 
     let en_entry = ModelCatalog::default_for_language("en")
         .context("no English model in catalog")?;
     if downloader.is_installed(&en_entry) {
-        info!("loading English model");
+        info!("loading English model from {:?}", downloader.installed_path(&en_entry));
         match model_runtime::LlamaCppCompleter::load(&downloader.installed_path(&en_entry)) {
-            Ok(completer) => {
-                router.register("en", Arc::new(completer));
+            Ok(c) => {
+                router.lock().await.register("en", Arc::new(c));
                 info!("English model loaded");
             }
             Err(e) => warn!("failed to load English model: {e}"),
         }
     } else {
-        info!("English model not installed; completions will be unavailable until download");
+        info!("English model not installed — waiting for download");
     }
 
-    let router = Arc::new(router);
     let exclusion_engine = ExclusionEngine::with_built_in();
-    let settings_ref = settings.clone();
     let telemetry = TelemetryClient::new(
         settings.get().install_id.clone(),
         settings.get().telemetry_enabled,
     );
 
-    // Track current completion so we can accept/dismiss it.
     let current_completion: Arc<Mutex<Option<completion_engine::CompletionEvent>>> =
         Arc::new(Mutex::new(None));
 
-    let transport = Arc::new(Mutex::new(transport));
-
-    // Tell the sidecar whether onboarding is needed (model not installed, or not yet completed).
+    // Tell Swift whether onboarding is needed.
     {
         let needs_onboarding = !downloader.is_installed(&en_entry)
             || !settings.get().onboarding_completed;
-        let mut t = transport.lock().await;
-        let _ = t.send_notification(
-            "ready",
-            serde_json::json!({ "needsOnboarding": needs_onboarding }),
-        ).await;
+        transport.lock().await
+            .send_notification("ready", serde_json::json!({ "needsOnboarding": needs_onboarding }))
+            .await?;
     }
 
     // Main event loop.
@@ -116,251 +99,188 @@ async fn main() -> Result<()> {
         let msg = match incoming.recv().await {
             Some(m) => m,
             None => {
-                info!("sidecar disconnected; exiting");
+                info!("Swift closed the pipe — exiting");
                 break;
             }
         };
 
         handle_message(
             msg,
-            &settings_ref,
+            &settings,
             &exclusion_engine,
             &router,
             &current_completion,
             &transport,
             &telemetry,
+            &downloader,
         )
         .await;
     }
 
-    child.wait().await?;
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_message(
     msg: RpcMessage,
     settings: &SettingsStore,
     exclusion: &ExclusionEngine,
-    router: &Arc<LanguageRouter>,
+    router: &Arc<Mutex<LanguageRouter>>,
     current_completion: &Arc<Mutex<Option<completion_engine::CompletionEvent>>>,
     transport: &Arc<Mutex<IpcTransport>>,
     telemetry: &TelemetryClient,
+    downloader: &Arc<ModelDownloader>,
 ) {
     let method = msg.method.as_deref().unwrap_or("");
     let params = msg.params.as_ref().cloned().unwrap_or(serde_json::json!({}));
 
     match method {
+        "ping" => {
+            if let Some(id) = msg.id {
+                let _ = transport.lock().await.respond(id, serde_json::json!("pong")).await;
+            }
+        }
+
         "contextUpdate" => {
-            let ctx: ipc::SidecarToCore = match serde_json::from_value(serde_json::json!({
-                "method": "contextUpdate",
-                "params": params
-            })) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("bad contextUpdate: {e}");
-                    return;
-                }
-            };
+            let prefix          = params["prefix"].as_str().unwrap_or("").to_string();
+            let suffix          = params["suffix"].as_str().unwrap_or("").to_string();
+            let caret_x         = params["caretX"].as_f64().unwrap_or(0.0);
+            let caret_y         = params["caretY"].as_f64().unwrap_or(0.0);
+            let caret_height    = params["caretHeight"].as_f64().unwrap_or(16.0);
+            let app_bundle_id   = params["appBundleId"].as_str().unwrap_or("").to_string();
+            let is_secure_field = params["isSecureField"].as_bool().unwrap_or(false);
 
-            if let ipc::SidecarToCore::ContextUpdate {
-                prefix,
-                suffix,
-                caret_x,
-                caret_y,
-                caret_height,
-                app_bundle_id,
+            let s = settings.get();
+            let verdict = exclusion.verdict(
+                &app_bundle_id,
                 is_secure_field,
-            } = ctx
-            {
-                let s = settings.get();
-                let verdict = exclusion.verdict(
-                    &app_bundle_id,
-                    is_secure_field,
-                    &s.app_exclusion_overrides,
-                    &s.messaging_toast_shown,
-                );
+                &s.app_exclusion_overrides,
+                &s.messaging_toast_shown,
+            );
 
-                // Handle first-activation toast for messaging apps.
-                if let exclusion_engine::Verdict::DefaultOn {
-                    show_activation_toast: true,
-                    ..
-                } = &verdict
-                {
-                    if let Err(e) = settings.update(|s| {
-                        s.messaging_toast_shown.insert(app_bundle_id.clone());
-                    }) {
-                        warn!("failed to persist toast shown: {e}");
-                    }
-                    let mut t = transport.lock().await;
-                    let _ = t
-                        .send_notification(
-                            "showMessagingToast",
-                            serde_json::json!({ "bundleId": app_bundle_id }),
-                        )
-                        .await;
-                }
+            // Show first-activation toast for messaging apps.
+            if let exclusion_engine::Verdict::DefaultOn { show_activation_toast: true, .. } = &verdict {
+                let _ = settings.update(|s| { s.messaging_toast_shown.insert(app_bundle_id.clone()); });
+                let _ = transport.lock().await
+                    .send_notification("showMessagingToast", serde_json::json!({ "bundleId": app_bundle_id }))
+                    .await;
+            }
 
-                if !verdict.completions_active() {
-                    let mut t = transport.lock().await;
-                    let _ = t
+            if !verdict.completions_active() {
+                let _ = transport.lock().await
+                    .send_notification("hideOverlay", serde_json::json!({}))
+                    .await;
+                let _ = transport.lock().await
+                    .send_notification("updateMenuBar", serde_json::json!({
+                        "appName": app_bundle_id,
+                        "active": false
+                    }))
+                    .await;
+                return;
+            }
+
+            let _ = transport.lock().await
+                .send_notification("updateMenuBar", serde_json::json!({
+                    "appName": app_bundle_id,
+                    "active": true
+                }))
+                .await;
+
+            // Route to a loaded completer.
+            let completer = router.lock().await.route(&prefix, &s);
+            let completer = match completer {
+                Some(c) => c,
+                None => {
+                    // No model loaded yet — hide overlay silently.
+                    let _ = transport.lock().await
                         .send_notification("hideOverlay", serde_json::json!({}))
                         .await;
                     return;
                 }
+            };
 
-                // Route to completer.
-                let completer = match router.route(&prefix, &s) {
-                    Some(c) => c,
-                    None => {
-                        // No model loaded — tell the sidecar to hide.
-                        let mut t = transport.lock().await;
-                        let _ = t
-                            .send_notification("hideOverlay", serde_json::json!({}))
-                            .await;
-                        return;
-                    }
-                };
+            let transport_c = transport.clone();
+            let current_c   = current_completion.clone();
+            let prefix_c    = prefix.clone();
 
-                let ctx = CompletionContext {
-                    prefix: prefix.clone(),
-                    suffix,
-                    caret_x,
-                    caret_y,
-                    caret_height,
-                    app_bundle_id,
-                };
-
-                // Run completion inline for simplicity (the engine handles debounce).
-                let prefix_clone = prefix.clone();
-                let caret_x_ = caret_x;
-                let caret_y_ = caret_y;
-                let caret_height_ = caret_height;
-                let transport_clone = transport.clone();
-                let current_clone = current_completion.clone();
-
-                tokio::spawn(async move {
-                    let text = tokio::task::spawn_blocking(move || {
-                        completer.complete(&prefix_clone, 25)
-                    })
-                    .await;
-
-                    match text {
-                        Ok(Ok(t)) if !t.is_empty() => {
-                            use model_runtime::truncate_at_sentence_boundary;
-                            let text = truncate_at_sentence_boundary(t);
-                            let event = completion_engine::CompletionEvent {
-                                id: 1,
-                                text: text.clone(),
-                                context: ctx,
-                            };
-                            *current_clone.lock().await = Some(event);
-
-                            let mut tr = transport_clone.lock().await;
-                            let _ = tr
-                                .send_notification(
-                                    "showOverlay",
-                                    serde_json::json!({
-                                        "x": caret_x_,
-                                        "y": caret_y_,
-                                        "height": caret_height_,
-                                        "text": text
-                                    }),
-                                )
-                                .await;
+            tokio::spawn(async move {
+                let result = tokio::task::spawn_blocking(move || completer.complete(&prefix_c, 25)).await;
+                match result {
+                    Ok(Ok(raw)) if !raw.is_empty() => {
+                        let text = model_runtime::truncate_at_sentence_boundary(raw);
+                        if text.is_empty() {
+                            info!("completion yielded empty text after truncation — suppressing overlay");
+                            return;
                         }
-                        _ => {}
+                        info!("showOverlay text={:?}", text);
+                        let event = completion_engine::CompletionEvent {
+                            id: 1,
+                            text: text.clone(),
+                            context: CompletionContext {
+                                prefix: prefix.clone(),
+                                suffix,
+                                caret_x,
+                                caret_y,
+                                caret_height,
+                                app_bundle_id,
+                            },
+                        };
+                        *current_c.lock().await = Some(event);
+                        let _ = transport_c.lock().await
+                            .send_notification("showOverlay", serde_json::json!({
+                                "x":      caret_x,
+                                "y":      caret_y,
+                                "height": caret_height,
+                                "text":   text
+                            }))
+                            .await;
                     }
-                });
-            }
+                    Ok(Ok(_)) => info!("completion returned empty string"),
+                    Ok(Err(e)) => warn!("completion error: {e}"),
+                    Err(e)    => warn!("spawn_blocking panicked: {e}"),
+                }
+            });
         }
 
         "acceptCompletion" => {
-            let mut guard = current_completion.lock().await;
-            if let Some(event) = guard.take() {
-                info!("completion accepted id={}", event.id);
-                telemetry.record(TelemetryEvent::CompletionAccepted {
-                    model_id: "qwen2.5-1.5b-q4".to_string(),
-                });
+            if current_completion.lock().await.take().is_some() {
+                telemetry.record(TelemetryEvent::CompletionAccepted { model_id: "qwen2.5-1.5b-q4".into() });
             }
         }
 
         "dismissCompletion" => {
-            let mut guard = current_completion.lock().await;
-            if guard.take().is_some() {
-                info!("completion dismissed");
-                telemetry.record(TelemetryEvent::CompletionDismissed {
-                    model_id: "qwen2.5-1.5b-q4".to_string(),
-                });
+            if current_completion.lock().await.take().is_some() {
+                telemetry.record(TelemetryEvent::CompletionDismissed { model_id: "qwen2.5-1.5b-q4".into() });
             }
-        }
-
-        "resetTabTypist" => {
-            info!("reset requested — removing all TabTypist data");
-            if let Err(e) = settings_store::delete_all_data() {
-                warn!("reset error: {e}");
-            }
-            // Also remove installed model files
-            if let Ok(models) = model_downloader::models_dir() {
-                if models.exists() {
-                    let _ = std::fs::remove_dir_all(&models);
-                    info!("removed models directory at {models:?}");
-                }
-            }
-        }
-
-        "onboardingComplete" => {
-            let _ = settings.update(|s| {
-                s.onboarding_completed = true;
-                s.onboarding_phase = 5; // OnboardingPhase::Done
-            });
-            info!("onboarding marked complete");
         }
 
         "startModelDownload" => {
-            let lang = params
-                .get("language")
-                .and_then(|v| v.as_str())
-                .unwrap_or("en")
-                .to_string();
+            let lang = params["language"].as_str().unwrap_or("en").to_string();
+            let transport_c  = transport.clone();
+            let router_c     = router.clone();
+            let downloader_c = downloader.clone();
 
-            let transport_clone = transport.clone();
             tokio::spawn(async move {
-                let entry = match model_downloader::ModelCatalog::default_for_language(&lang) {
+                let entry = match ModelCatalog::default_for_language(&lang) {
                     Some(e) => e,
                     None => return,
                 };
-                let models_dir = match model_downloader::models_dir() {
-                    Ok(d) => d,
-                    Err(e) => { warn!("models dir: {e}"); return; }
-                };
-                let ed25519_pubkey = include_bytes!("../../../Resources/ed25519_pubkey.bin");
-                let downloader = model_downloader::ModelDownloader::new(models_dir, *ed25519_pubkey);
 
                 let (progress_tx, mut progress_rx) = tokio::sync::watch::channel(
-                    model_downloader::DownloadProgress::Starting { total_bytes: entry.size_bytes }
+                    model_downloader::DownloadProgress::Starting { total_bytes: entry.size_bytes },
                 );
 
-                let transport_inner = transport_clone.clone();
+                // Forward progress updates to Swift.
+                let t2 = transport_c.clone();
                 tokio::spawn(async move {
                     while progress_rx.changed().await.is_ok() {
-                        let p = progress_rx.borrow().clone();
-                        let payload = match &p {
+                        let payload = match &*progress_rx.borrow() {
                             model_downloader::DownloadProgress::Starting { total_bytes } => {
-                                serde_json::json!({
-                                    "phase": "downloading",
-                                    "downloaded": 0_i64,
-                                    "total": *total_bytes as i64,
-                                    "progress": 0.0
-                                })
+                                serde_json::json!({ "phase": "downloading", "downloaded": 0_i64, "total": *total_bytes as i64, "progress": 0.0 })
                             }
                             model_downloader::DownloadProgress::Progress { downloaded, total } => {
-                                let fraction = *downloaded as f64 / (*total).max(1) as f64;
-                                serde_json::json!({
-                                    "phase": "downloading",
-                                    "downloaded": *downloaded as i64,
-                                    "total": *total as i64,
-                                    "progress": fraction
-                                })
+                                let frac = *downloaded as f64 / (*total).max(1) as f64;
+                                serde_json::json!({ "phase": "downloading", "downloaded": *downloaded as i64, "total": *total as i64, "progress": frac })
                             }
                             model_downloader::DownloadProgress::Verifying => {
                                 serde_json::json!({ "phase": "verifying" })
@@ -372,97 +292,64 @@ async fn handle_message(
                                 serde_json::json!({ "phase": "failed", "error": error })
                             }
                         };
-                        let mut t = transport_inner.lock().await;
-                        let _ = t.send_notification("downloadProgress", payload).await;
+                        let _ = t2.lock().await.send_notification("downloadProgress", payload).await;
                     }
                 });
 
-                match downloader.download(&entry, progress_tx).await {
-                    Ok(_) => info!("model download complete for {lang}"),
+                match downloader_c.download(&entry, progress_tx).await {
+                    Ok(path) => {
+                        info!("model installed at {path:?}; loading into router");
+                        match model_runtime::LlamaCppCompleter::load(&path) {
+                            Ok(c) => {
+                                router_c.lock().await.register(lang.clone(), Arc::new(c));
+                                info!("model hot-loaded after download");
+                            }
+                            Err(e) => warn!("post-download model load failed: {e}"),
+                        }
+                    }
                     Err(e) => {
                         warn!("model download failed: {e}");
-                        let mut t = transport_clone.lock().await;
-                        let _ = t.send_notification(
-                            "downloadProgress",
-                            serde_json::json!({ "phase": "failed", "error": e.to_string() }),
-                        ).await;
+                        let _ = transport_c.lock().await
+                            .send_notification("downloadProgress", serde_json::json!({ "phase": "failed", "error": e.to_string() }))
+                            .await;
                     }
                 }
             });
         }
 
-        "updateSetting" => {
-            // sidecar sends: { key: "telemetryEnabled", value: true/false }
-            if let Some(key) = params.get("key").and_then(|v| v.as_str()) {
-                match key {
-                    "telemetryEnabled" => {
-                        let enabled = params
-                            .get("value")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        let _ = settings.update(|s| s.telemetry_enabled = enabled);
-                        telemetry.set_consent(enabled);
-                    }
-                    "disableApp" => {
-                        let bundle_id = params
-                            .get("bundleId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let _ = settings.update(|s| {
-                            s.app_exclusion_overrides.insert(bundle_id, false);
-                        });
-                    }
-                    "enableApp" => {
-                        let bundle_id = params
-                            .get("bundleId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let _ = settings.update(|s| {
-                            s.app_exclusion_overrides.insert(bundle_id, true);
-                        });
-                    }
-                    _ => warn!("unknown setting key: {key}"),
-                }
+        "onboardingComplete" => {
+            let _ = settings.update(|s| { s.onboarding_completed = true; s.onboarding_phase = 5; });
+        }
+
+        "resetTabTypist" => {
+            info!("full reset requested");
+            let _ = settings_store::delete_all_data();
+            if let Ok(models) = model_downloader::models_dir() {
+                if models.exists() { let _ = std::fs::remove_dir_all(models); }
             }
         }
 
-        _ if !method.is_empty() => {
-            warn!("unhandled sidecar method: {method}");
+        "updateSetting" => {
+            let key = params["key"].as_str().unwrap_or("");
+            match key {
+                "telemetryEnabled" => {
+                    let enabled = params["value"].as_bool().unwrap_or(false);
+                    let _ = settings.update(|s| s.telemetry_enabled = enabled);
+                    telemetry.set_consent(enabled);
+                }
+                "disableApp" => {
+                    let id = params["bundleId"].as_str().unwrap_or("").to_string();
+                    let _ = settings.update(|s| { s.app_exclusion_overrides.insert(id, false); });
+                }
+                "enableApp" => {
+                    let id = params["bundleId"].as_str().unwrap_or("").to_string();
+                    let _ = settings.update(|s| { s.app_exclusion_overrides.insert(id, true); });
+                }
+                _ => warn!("unknown setting key: {key}"),
+            }
         }
+
+        other if !other.is_empty() => warn!("unhandled method: {other}"),
         _ => {}
     }
-}
-
-fn sidecar_binary_path() -> Result<std::path::PathBuf> {
-    // In the app bundle: Contents/Resources/tabtypist-sidecar
-    // In development: look next to this binary.
-    let exe = std::env::current_exe()?;
-    let dir = exe.parent().context("no parent dir for executable")?;
-
-    // App bundle layout: MacOS/tabtypist-core → Resources/tabtypist-sidecar
-    let bundle_path = dir
-        .parent()
-        .map(|p| p.join("Resources").join("tabtypist-sidecar"))
-        .unwrap_or_default();
-
-    if bundle_path.exists() {
-        return Ok(bundle_path);
-    }
-
-    // Development: sidecar next to core binary
-    let dev_path = dir.join("tabtypist-sidecar");
-    if dev_path.exists() {
-        return Ok(dev_path);
-    }
-
-    // Allow override via env var
-    if let Ok(p) = std::env::var("TABTYPIST_SIDECAR_PATH") {
-        return Ok(std::path::PathBuf::from(p));
-    }
-
-    anyhow::bail!(
-        "could not locate tabtypist-sidecar binary (tried {bundle_path:?} and {dev_path:?})"
-    )
 }

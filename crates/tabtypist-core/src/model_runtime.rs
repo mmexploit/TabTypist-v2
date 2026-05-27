@@ -58,6 +58,7 @@ impl Completer for LlamaCppCompleter {
             return Ok(String::new());
         }
 
+        // Prefill: only the last token needs logits.
         let mut batch = LlamaBatch::new(512, 1);
         let last_idx = (tokens.len() - 1) as i32;
         for (i, &tok) in tokens.iter().enumerate() {
@@ -75,30 +76,42 @@ impl Completer for LlamaCppCompleter {
         let mut result = String::new();
         let mut n_cur = tokens.len() as i32;
 
-        for _ in 0..max_tokens {
-            let token = sampler.sample(&ctx, n_cur - 1);
-            sampler.accept(token);
+        // Sample first token from the prefill batch (logit index = last_idx).
+        let mut token = sampler.sample(&ctx, last_idx);
+        sampler.accept(token);
 
+        for _ in 0..max_tokens {
             if token == self.model.token_eos() {
                 break;
             }
 
+            // special=false skips special tokens (<|im_start|> etc.) so they
+            // don't corrupt the output or trigger an early sentence-boundary break.
             let piece = self
                 .model
-                .token_to_piece(token, &mut decoder, true, None)?;
-            result.push_str(&piece);
+                .token_to_piece(token, &mut decoder, false, None)?;
 
-            if ends_at_sentence_boundary(&result) {
-                break;
+            if !piece.is_empty() {
+                result.push_str(&piece);
+                if ends_at_sentence_boundary(&result) {
+                    break;
+                }
             }
 
+            // Single-token batch: logit index is always 0.
             let mut next_batch = LlamaBatch::new(1, 1);
             next_batch.add(token, n_cur, &[0], true)?;
             ctx.decode(&mut next_batch)?;
             n_cur += 1;
+
+            token = sampler.sample(&ctx, 0);
+            sampler.accept(token);
         }
 
-        Ok(truncate_at_sentence_boundary(result))
+        // Drop leading whitespace — instruct models often start with a newline.
+        let trimmed = result.trim_start().to_string();
+        tracing::debug!("completion raw={:?}", trimmed);
+        Ok(truncate_at_sentence_boundary(trimmed))
     }
 }
 

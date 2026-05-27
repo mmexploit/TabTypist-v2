@@ -79,9 +79,12 @@ final class AXMonitor: @unchecked Sendable {
             AXValueGetValue(bv as! AXValue, .cgRect, &caretRect)
         }
 
-        // Convert from screen coordinates (AX uses bottom-left origin on some macOS versions)
+        // AX coords: origin top-left, y increases down.
+        // Cocoa coords: origin bottom-left, y increases up.
+        // We report the TOP of the caret in Cocoa coords so OverlayWindow can
+        // compute the dropdown position as: y - caretHeight - panelHeight - gap.
         let screenHeight = NSScreen.main?.frame.height ?? 0
-        let screenY = screenHeight - caretRect.origin.y - caretRect.height
+        let screenY = screenHeight - caretRect.origin.y   // top of caret in Cocoa
 
         // Only report if prefix changed or app changed
         if prefix == lastPrefix && bundleId == lastBundleId { return }
