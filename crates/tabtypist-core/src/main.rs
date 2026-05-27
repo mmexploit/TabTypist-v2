@@ -100,6 +100,17 @@ async fn main() -> Result<()> {
 
     let transport = Arc::new(Mutex::new(transport));
 
+    // Tell the sidecar whether onboarding is needed (model not installed, or not yet completed).
+    {
+        let needs_onboarding = !downloader.is_installed(&en_entry)
+            || !settings.get().onboarding_completed;
+        let mut t = transport.lock().await;
+        let _ = t.send_notification(
+            "ready",
+            serde_json::json!({ "needsOnboarding": needs_onboarding }),
+        ).await;
+    }
+
     // Main event loop.
     loop {
         let msg = match incoming.recv().await {
@@ -333,24 +344,49 @@ async fn handle_message(
                 tokio::spawn(async move {
                     while progress_rx.changed().await.is_ok() {
                         let p = progress_rx.borrow().clone();
-                        let fraction = match &p {
-                            model_downloader::DownloadProgress::Progress { downloaded, total } => {
-                                *downloaded as f64 / *total as f64
+                        let payload = match &p {
+                            model_downloader::DownloadProgress::Starting { total_bytes } => {
+                                serde_json::json!({
+                                    "phase": "downloading",
+                                    "downloaded": 0_i64,
+                                    "total": *total_bytes as i64,
+                                    "progress": 0.0
+                                })
                             }
-                            model_downloader::DownloadProgress::Complete { .. } => 1.0,
-                            _ => 0.0,
+                            model_downloader::DownloadProgress::Progress { downloaded, total } => {
+                                let fraction = *downloaded as f64 / (*total).max(1) as f64;
+                                serde_json::json!({
+                                    "phase": "downloading",
+                                    "downloaded": *downloaded as i64,
+                                    "total": *total as i64,
+                                    "progress": fraction
+                                })
+                            }
+                            model_downloader::DownloadProgress::Verifying => {
+                                serde_json::json!({ "phase": "verifying" })
+                            }
+                            model_downloader::DownloadProgress::Complete { .. } => {
+                                serde_json::json!({ "phase": "complete", "progress": 1.0 })
+                            }
+                            model_downloader::DownloadProgress::Failed { error } => {
+                                serde_json::json!({ "phase": "failed", "error": error })
+                            }
                         };
                         let mut t = transport_inner.lock().await;
-                        let _ = t.send_notification(
-                            "downloadProgress",
-                            serde_json::json!({ "progress": fraction }),
-                        ).await;
+                        let _ = t.send_notification("downloadProgress", payload).await;
                     }
                 });
 
                 match downloader.download(&entry, progress_tx).await {
                     Ok(_) => info!("model download complete for {lang}"),
-                    Err(e) => warn!("model download failed: {e}"),
+                    Err(e) => {
+                        warn!("model download failed: {e}");
+                        let mut t = transport_clone.lock().await;
+                        let _ = t.send_notification(
+                            "downloadProgress",
+                            serde_json::json!({ "phase": "failed", "error": e.to_string() }),
+                        ).await;
+                    }
                 }
             });
         }

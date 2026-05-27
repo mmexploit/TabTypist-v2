@@ -159,12 +159,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
                 }
 
             case "downloadProgress":
-                let _progress = (params["progress"] as? Double) ?? 0
-                // Progress relay to onboarding UI happens via NotificationCenter
+                // Forward all params directly so ModelDownloadStep can pick up
+                // phase, downloaded, total, progress, and error fields.
+                var userInfo: [String: Any] = [:]
+                if let phase    = params["phase"]      as? String { userInfo["phase"]      = phase }
+                if let dl       = params["downloaded"]  as? Int    { userInfo["downloaded"]  = Int64(dl) }
+                if let tot      = params["total"]       as? Int    { userInfo["total"]       = Int64(tot) }
+                if let prog     = params["progress"]    as? Double { userInfo["progress"]    = prog }
+                if let err      = params["error"]       as? String { userInfo["error"]       = err }
                 NotificationCenter.default.post(
-                    name: .downloadProgressUpdated,
-                    object: nil,
-                    userInfo: ["progress": _progress]
+                    name: .downloadProgressUpdated, object: nil, userInfo: userInfo
                 )
 
             default:
