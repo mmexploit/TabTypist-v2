@@ -1,4 +1,4 @@
-use crate::model_runtime::Completer;
+use crate::model_runtime::{truncate_at_sentence_boundary, Completer};
 use anyhow::Result;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -8,7 +8,10 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info};
 
+#[cfg(not(test))]
 const DEBOUNCE_MS: u64 = 150;
+#[cfg(test)]
+const DEBOUNCE_MS: u64 = 10;
 const MAX_TOKENS: u32 = 25;
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -114,7 +117,9 @@ impl CompletionEngine {
                 }
 
                 match result {
-                    Ok(Ok(text)) if !text.is_empty() => {
+                    Ok(Ok(raw)) if !raw.is_empty() => {
+                        let text = truncate_at_sentence_boundary(raw);
+                        if text.is_empty() { return; }
                         let event = CompletionEvent { id, text, context: ctx };
                         info!("completion ready id={id}");
                         let _ = engine.event_tx.send(event).await;
@@ -154,37 +159,36 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    // Poll rx until an event arrives or the deadline passes.
+    async fn recv_timeout(rx: &mut mpsc::Receiver<CompletionEvent>, ms: u64) -> Option<CompletionEvent> {
+        tokio::time::timeout(Duration::from_millis(ms), rx.recv()).await.ok().flatten()
+    }
+
+    #[tokio::test]
     async fn debounce_coalesces_burst() {
         let stub = Arc::new(StubCompleter {
             response: "world.".to_string(),
         });
         let (engine, mut rx) = CompletionEngine::new(stub);
 
-        // Fire three triggers in quick succession — only the last should produce a completion.
+        // Fire three triggers in rapid succession — only the last should produce a completion.
         engine.clone().trigger(ctx("Hello ")).await;
         engine.clone().trigger(ctx("Hello w")).await;
         engine.clone().trigger(ctx("Hello wo")).await;
 
-        // Advance past debounce
-        tokio::time::advance(Duration::from_millis(200)).await;
-        tokio::task::yield_now().await;
-
-        // Exactly one event should arrive (the last trigger wins)
-        let event = tokio::time::timeout(Duration::from_millis(50), rx.recv())
+        // Wait long enough for debounce to fire (DEBOUNCE_MS=10 in tests) + inference
+        let event = recv_timeout(&mut rx, 500)
             .await
-            .expect("expected a completion event")
-            .unwrap();
+            .expect("expected a completion event after burst");
         assert_eq!(event.text, "world.");
 
-        // No second event
-        assert!(rx.try_recv().is_err(), "only one completion expected after burst");
+        // No second event within a short window
+        assert!(recv_timeout(&mut rx, 50).await.is_none(), "only one completion expected after burst");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn cancellation_token_cancels_inflight() {
         use std::sync::atomic::AtomicUsize;
-
         static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
         struct CountingCompleter;
@@ -196,19 +200,15 @@ mod tests {
         }
 
         let (engine, mut rx) = CompletionEngine::new(Arc::new(CountingCompleter));
-
         engine.clone().trigger(ctx("first ")).await;
-        // Cancel immediately
+        // Cancel immediately before debounce expires
         engine.dismiss_current().await;
 
-        tokio::time::advance(Duration::from_millis(200)).await;
-        tokio::task::yield_now().await;
-
-        // The cancelled trigger should not emit an event
-        assert!(rx.try_recv().is_err(), "cancelled completion must not emit");
+        // The cancelled trigger must not emit an event within the debounce+margin window
+        assert!(recv_timeout(&mut rx, 200).await.is_none(), "cancelled completion must not emit");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn sentence_boundary_truncation() {
         let stub = Arc::new(StubCompleter {
             response: "Hello world. This is extra.".to_string(),
@@ -216,20 +216,14 @@ mod tests {
         let (engine, mut rx) = CompletionEngine::new(stub);
         engine.clone().trigger(ctx("Say ")).await;
 
-        tokio::time::advance(Duration::from_millis(200)).await;
-        tokio::task::yield_now().await;
-
-        let event = tokio::time::timeout(Duration::from_millis(50), rx.recv())
+        let event = recv_timeout(&mut rx, 500)
             .await
-            .expect("expected event")
-            .unwrap();
+            .expect("expected event");
         assert_eq!(event.text, "Hello world.", "must stop at first sentence boundary");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn token_cap_applied() {
-        // StubCompleter ignores max_tokens, but the engine passes 25.
-        // We verify the engine calls the completer with the capped value via a spy.
         use std::sync::atomic::AtomicU32;
         static SAW_MAX: AtomicU32 = AtomicU32::new(0);
 
@@ -243,8 +237,7 @@ mod tests {
 
         let (engine, _rx) = CompletionEngine::new(Arc::new(MaxCapSpy));
         engine.clone().trigger(ctx("test")).await;
-        tokio::time::advance(Duration::from_millis(200)).await;
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(SAW_MAX.load(Ordering::SeqCst), MAX_TOKENS);
     }
 }

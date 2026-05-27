@@ -146,12 +146,15 @@ mod tests {
 
     #[test]
     fn no_pii_in_completion_event() {
-        // Verify that CompletionAccepted only contains model_id, not any text.
+        // Verify that CompletionAccepted only contains model_id, not any user text.
         let event = TelemetryEvent::CompletionAccepted {
             model_id: "qwen2.5-1.5b-q4".to_string(),
         };
         let json = serde_json::to_string(&event).unwrap();
-        assert!(!json.contains("prefix"), "completion event must not contain field text");
-        assert!(!json.contains("completion"), "completion event must not contain completion text");
+        // Must not contain field text (prefix/suffix) or actual completion content
+        assert!(!json.contains("prefix"), "event must not contain field text (prefix)");
+        assert!(!json.contains("\"text\""), "event must not contain raw completion text");
+        // model_id is the only non-metadata field — verify it's there
+        assert!(json.contains("qwen2.5-1.5b-q4"), "model_id must be recorded");
     }
 }

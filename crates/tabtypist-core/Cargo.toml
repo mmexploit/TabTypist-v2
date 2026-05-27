@@ -31,6 +31,9 @@ base64 = "0.22"
 # Settings store
 dirs = "5"
 
+# Text decoding for llama output
+encoding_rs = "0.8"
+
 # Stream iteration for downloader
 futures-util = "0.3"
 

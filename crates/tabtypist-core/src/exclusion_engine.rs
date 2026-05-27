@@ -324,6 +324,7 @@ mod tests {
 
     #[test]
     fn tampered_remote_config_rejected() {
+        use base64::Engine;
         // A zero key will reject any real signature
         let zero_key = [0u8; 32];
         let bundle = SignedExclusionConfig {

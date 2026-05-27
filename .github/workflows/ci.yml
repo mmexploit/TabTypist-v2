@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Rust tests
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+  build-and-notarize:
+    name: Build · Sign · Notarize
+    needs: test
+    runs-on: macos-14
+    if: github.ref == 'refs/heads/main'
+    env:
+      APP_NAME: TabTypist
+      BUNDLE_ID: com.tabtypist.TabTypist
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust core (release)
+        run: cargo build --release -p tabtypist-core
+
+      - name: Build Swift app (release)
+        run: swift build -c release
+
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: tabtypist-ci-keychain
+        run: |
+          echo "$CERTIFICATE_P12_BASE64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm /tmp/cert.p12
+
+      - name: Assemble app bundle
+        run: bash scripts/bundle.sh
+
+      - name: Codesign app bundle
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID_APPLICATION_IDENTITY }}
+        run: |
+          codesign --force --deep --sign "$DEVELOPER_ID" \
+            --entitlements Resources/TabTypist.entitlements \
+            --options runtime \
+            dist/TabTypist.app
+          codesign --verify --verbose dist/TabTypist.app
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "TabTypist" -srcfolder dist/TabTypist.app \
+            -ov -format UDZO dist/TabTypist.dmg
+
+      - name: Notarize DMG
+        env:
+          NOTARIZE_APPLE_ID: ${{ secrets.NOTARIZE_APPLE_ID }}
+          NOTARIZE_TEAM_ID: ${{ secrets.NOTARIZE_TEAM_ID }}
+          NOTARIZE_APP_PASSWORD: ${{ secrets.NOTARIZE_APP_PASSWORD }}
+        run: |
+          xcrun notarytool submit dist/TabTypist.dmg \
+            --apple-id "$NOTARIZE_APPLE_ID" \
+            --team-id "$NOTARIZE_TEAM_ID" \
+            --password "$NOTARIZE_APP_PASSWORD" \
+            --wait
+
+      - name: Staple notarization ticket
+        run: xcrun stapler staple dist/TabTypist.dmg
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TabTypist-${{ github.sha }}.dmg
+          path: dist/TabTypist.dmg
+          retention-days: 30
+
+      - name: Create release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/TabTypist.dmg
+          generate_release_notes: true

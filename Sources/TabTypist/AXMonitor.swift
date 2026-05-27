@@ -64,8 +64,8 @@ final class AXMonitor: @unchecked Sendable {
 
         // Get the caret bounds
         var boundsValue: AnyObject?
-        let caretRange = CFRangeMake(caretPos, 0)
-        if let axRange = AXValueCreate(.cfRange, &(caretRange as CFRange)) {
+        var caretRange = CFRangeMake(caretPos, 0)
+        if let axRange = AXValueCreate(.cfRange, &caretRange) {
             AXUIElementCopyParameterizedAttributeValue(
                 axElement,
                 kAXBoundsForRangeParameterizedAttribute as CFString,

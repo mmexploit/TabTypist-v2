@@ -283,6 +283,78 @@ async fn handle_message(
             }
         }
 
+        "resetTabTypist" => {
+            info!("reset requested — removing all TabTypist data");
+            if let Err(e) = settings_store::delete_all_data() {
+                warn!("reset error: {e}");
+            }
+            // Also remove installed model files
+            if let Ok(models) = model_downloader::models_dir() {
+                if models.exists() {
+                    let _ = std::fs::remove_dir_all(&models);
+                    info!("removed models directory at {models:?}");
+                }
+            }
+        }
+
+        "onboardingComplete" => {
+            let _ = settings.update(|s| {
+                s.onboarding_completed = true;
+                s.onboarding_phase = 5; // OnboardingPhase::Done
+            });
+            info!("onboarding marked complete");
+        }
+
+        "startModelDownload" => {
+            let lang = params
+                .get("language")
+                .and_then(|v| v.as_str())
+                .unwrap_or("en")
+                .to_string();
+
+            let transport_clone = transport.clone();
+            tokio::spawn(async move {
+                let entry = match model_downloader::ModelCatalog::default_for_language(&lang) {
+                    Some(e) => e,
+                    None => return,
+                };
+                let models_dir = match model_downloader::models_dir() {
+                    Ok(d) => d,
+                    Err(e) => { warn!("models dir: {e}"); return; }
+                };
+                let ed25519_pubkey = include_bytes!("../../../Resources/ed25519_pubkey.bin");
+                let downloader = model_downloader::ModelDownloader::new(models_dir, *ed25519_pubkey);
+
+                let (progress_tx, mut progress_rx) = tokio::sync::watch::channel(
+                    model_downloader::DownloadProgress::Starting { total_bytes: entry.size_bytes }
+                );
+
+                let transport_inner = transport_clone.clone();
+                tokio::spawn(async move {
+                    while progress_rx.changed().await.is_ok() {
+                        let p = progress_rx.borrow().clone();
+                        let fraction = match &p {
+                            model_downloader::DownloadProgress::Progress { downloaded, total } => {
+                                *downloaded as f64 / *total as f64
+                            }
+                            model_downloader::DownloadProgress::Complete { .. } => 1.0,
+                            _ => 0.0,
+                        };
+                        let mut t = transport_inner.lock().await;
+                        let _ = t.send_notification(
+                            "downloadProgress",
+                            serde_json::json!({ "progress": fraction }),
+                        ).await;
+                    }
+                });
+
+                match downloader.download(&entry, progress_tx).await {
+                    Ok(_) => info!("model download complete for {lang}"),
+                    Err(e) => warn!("model download failed: {e}"),
+                }
+            });
+        }
+
         "updateSetting" => {
             // sidecar sends: { key: "telemetryEnabled", value: true/false }
             if let Some(key) = params.get("key").and_then(|v| v.as_str()) {
