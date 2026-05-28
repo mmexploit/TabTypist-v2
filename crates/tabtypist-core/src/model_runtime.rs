@@ -49,13 +49,20 @@ impl Completer for LlamaCppCompleter {
 
         let mut ctx = self.model.new_context(&self.backend, ctx_params)?;
 
-        let tokens = self
+        let mut tokens = self
             .model
             .str_to_token(prefix, AddBos::Always)
             .with_context(|| "tokenizing prefix")?;
 
         if tokens.is_empty() {
             return Ok(String::new());
+        }
+
+        // Leave room for generated tokens inside the context window.
+        let n_ctx = 512usize;
+        let max_prefix = n_ctx.saturating_sub(max_tokens as usize + 4);
+        if tokens.len() > max_prefix {
+            tokens = tokens[tokens.len() - max_prefix..].to_vec();
         }
 
         // Prefill: only the last token needs logits.

@@ -124,14 +124,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         let params = (msg.params?.value as? [String: Any]) ?? [:]
 
         DispatchQueue.main.async {
+            // serde_json may serialize whole-number f64 values as JSON integers,
+            // causing AnyCodable to store them as Int rather than Double.
+            func cgf(_ v: Any?, fallback: CGFloat = 0) -> CGFloat {
+                if let d = v as? Double { return CGFloat(d) }
+                if let i = v as? Int    { return CGFloat(i) }
+                return fallback
+            }
+
             switch method {
             case "showOverlay":
-                let x      = (params["x"]      as? Double) ?? 0
-                let y      = (params["y"]      as? Double) ?? 0
-                let height = (params["height"] as? Double) ?? 16
-                let text   = (params["text"]   as? String) ?? ""
+                let x      = cgf(params["x"])
+                let y      = cgf(params["y"])
+                let height = cgf(params["height"], fallback: 16)
+                let text   = (params["text"] as? String) ?? ""
+                fputs("TabTypist showOverlay received: x=\(x) y=\(y) h=\(height) text=\(text.prefix(40))\n", stderr)
                 OverlayWindow.shared.show(
-                    text: text, x: CGFloat(x), y: CGFloat(y), caretHeight: CGFloat(height)
+                    text: text, x: x, y: y, caretHeight: height
                 )
                 KeyCapture.shared.setCompletion(text)
 

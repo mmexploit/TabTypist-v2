@@ -22,8 +22,7 @@ final class KeyCapture: @unchecked Sendable {
     }
 
     func start() {
-        let mask: CGEventMask =
-            (1 << CGEventType.keyDown.rawValue)
+        let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
 
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         eventTap = CGEvent.tapCreate(
@@ -44,7 +43,7 @@ final class KeyCapture: @unchecked Sendable {
             CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
         } else {
-            fputs("TabTypistSidecar: failed to create CGEventTap — Input Monitoring permission needed\n", stderr)
+            fputs("TabTypist: failed to create CGEventTap — Input Monitoring permission needed\n", stderr)
         }
     }
 
@@ -56,15 +55,18 @@ final class KeyCapture: @unchecked Sendable {
             if completionIsVisible {
                 let text = pendingCompletionText
                 clearCompletion()
+                // Hide overlay immediately and insert text via paste (works in all apps including CLI).
+                DispatchQueue.main.async { OverlayWindow.shared.hide() }
                 insertCompletion(text)
                 IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
-                return nil // consume the event
+                return nil // consume the Tab
             }
-            return Unmanaged.passRetained(event) // pass through when no completion
+            return Unmanaged.passRetained(event)
 
         case Int64(kVK_Escape):
             if completionIsVisible {
                 clearCompletion()
+                DispatchQueue.main.async { OverlayWindow.shared.hide() }
                 IPCBridge.shared.notify(method: "dismissCompletion", params: [:])
             }
             return Unmanaged.passRetained(event)
@@ -74,44 +76,27 @@ final class KeyCapture: @unchecked Sendable {
         }
     }
 
-    // Insert completion text into the focused field via AX setValue.
+    // Insert completion by pasting via Cmd+V — works universally (terminal, browser, native apps).
+    // AXUIElementSetAttributeValue fails in most modern apps.
     private func insertCompletion(_ text: String) {
-        guard let app = NSWorkspace.shared.frontmostApplication else { return }
-        let appRef = AXUIElementCreateApplication(app.processIdentifier)
-        var focusedElement: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            appRef, kAXFocusedUIElementAttribute as CFString, &focusedElement
-        ) == .success else { return }
-        let element = focusedElement as! AXUIElement
+        let pb = NSPasteboard.general
+        let prev = pb.string(forType: .string)
 
-        // Get current value
-        var currentValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &currentValue) == .success,
-              let current = currentValue as? String
-        else { return }
+        pb.clearContents()
+        pb.setString(text, forType: .string)
 
-        // Get caret position
-        var rangeValue: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            element, kAXSelectedTextRangeAttribute as CFString, &rangeValue
-        ) == .success,
-              let rv = rangeValue
-        else { return }
+        let src = CGEventSource(stateID: .hidSystemState)
+        let vDown = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true)
+        let vUp   = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: false)
+        vDown?.flags = .maskCommand
+        vUp?.flags   = .maskCommand
+        vDown?.post(tap: .cghidEventTap)
+        vUp?.post(tap: .cghidEventTap)
 
-        var cfRange = CFRange()
-        guard AXValueGetValue(rv as! AXValue, .cfRange, &cfRange) else { return }
-
-        let caretPos = cfRange.location
-        let newText = String(current.prefix(caretPos)) + text + String(current.dropFirst(caretPos))
-        AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, newText as CFTypeRef)
-
-        // Move caret to end of inserted text
-        let newPos = caretPos + text.count
-        var newRange = CFRangeMake(newPos, 0)
-        if let axRange = AXValueCreate(.cfRange, &newRange) {
-            AXUIElementSetAttributeValue(
-                element, kAXSelectedTextRangeAttribute as CFString, axRange
-            )
+        // Restore previous pasteboard content after the paste completes.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            pb.clearContents()
+            if let prev { pb.setString(prev, forType: .string) }
         }
     }
 }

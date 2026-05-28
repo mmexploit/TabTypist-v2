@@ -1,23 +1,21 @@
 import AppKit
 import Foundation
 
-// Borderless NSPanel that renders ghost-text at the caret position.
+// Borderless NSPanel that renders inline ghost text at the caret position.
 final class OverlayWindow: NSPanel {
     private let label: NSTextField
 
-    static let shared: OverlayWindow = {
-        let w = OverlayWindow()
-        return w
-    }()
+    static let shared: OverlayWindow = OverlayWindow()
 
     private init() {
         label = NSTextField(labelWithString: "")
         label.font = NSFont.systemFont(ofSize: 14, weight: .regular)
-        label.textColor = NSColor.placeholderTextColor
+        label.textColor = NSColor.labelColor.withAlphaComponent(0.4)
         label.backgroundColor = .clear
         label.isBezeled = false
         label.isEditable = false
-        label.sizeToFit()
+        label.cell?.wraps = false
+        label.cell?.truncatesLastVisibleLine = false
 
         super.init(
             contentRect: .zero,
@@ -26,47 +24,46 @@ final class OverlayWindow: NSPanel {
             defer: false
         )
 
-        level = .floating
+        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 1)
         isOpaque = false
         backgroundColor = .clear
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         ignoresMouseEvents = true
         hasShadow = false
 
-        let container = NSView(frame: .zero)
-        container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.windowBackgroundColor
-            .withAlphaComponent(0.85)
-            .cgColor
-        container.layer?.cornerRadius = 4
-
-        container.addSubview(label)
-        contentView = container
+        contentView = label
     }
 
     func show(text: String, x: CGFloat, y: CGFloat, caretHeight: CGFloat) {
+        // Scale font to match the target app's line height.
+        // caretHeight ≈ line height; system font line height ≈ fontSize * 1.33
+        let fontSize = max(10, caretHeight * 0.75)
+        label.font = NSFont.systemFont(ofSize: fontSize, weight: .regular)
         label.stringValue = text
-        label.sizeToFit()
 
-        let padding: CGFloat = 4
-        let width = label.frame.width + padding * 2
-        let height = label.frame.height + padding * 2
+        let attrs: [NSAttributedString.Key: Any] = [.font: label.font as Any]
+        let measured = (text as NSString).size(withAttributes: attrs)
+        let panelW = measured.width + 4   // 2px NSTextField inset on each side
+        let panelH = max(measured.height, caretHeight)
 
-        let frame = NSRect(x: x, y: y - caretHeight - height - 2, width: width, height: height)
-        setFrame(frame, display: false)
+        // Ghost text sits on the same line as the cursor.
+        // y = TOP of caret in Cocoa (y-up); y - caretHeight = bottom of caret row.
+        let rawX = x
+        let rawY = y - caretHeight
 
-        label.frame = NSRect(
-            x: padding, y: padding,
-            width: label.frame.width, height: label.frame.height
-        )
+        // Clamp to the primary display's visible area as a safety net for apps
+        // (e.g. Electron, terminal) that return degenerate AX caret bounds.
+        let screen = NSScreen.screens.first ?? NSScreen.main ?? NSScreen()
+        let safe = screen.visibleFrame
+        let fx = max(safe.minX, min(rawX, safe.maxX - panelW))
+        let fy = max(safe.minY, min(rawY, safe.maxY - panelH))
+
+        fputs("overlay: (\(Int(fx)),\(Int(fy))) \(Int(panelW))×\(Int(panelH)) \"\(text.prefix(30))\"\n", stderr)
+
+        setFrame(NSRect(x: fx, y: fy, width: max(panelW, 20), height: max(panelH, 14)), display: true)
         contentView?.frame = NSRect(origin: .zero, size: frame.size)
-
+        alphaValue = 1
         orderFront(nil)
-        alphaValue = 0
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.1
-            animator().alphaValue = 1
-        }
     }
 
     func hide() {
