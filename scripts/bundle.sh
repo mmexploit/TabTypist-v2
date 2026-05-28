@@ -36,5 +36,13 @@ cp "${RUST_BUILD_DIR}/tabtypist-core" "${APP_DIR}/Contents/Resources/tabtypist-c
 cp "Resources/ed25519_pubkey.bin" "${APP_DIR}/Contents/Resources/ed25519_pubkey.bin"
 cp "Resources/Info.plist" "${APP_DIR}/Contents/Info.plist"
 
+# Ad-hoc codesign with a STABLE identifier. Without --identifier, macOS uses a
+# content-hash identifier that changes on every rebuild, and on macOS 14+ that
+# revokes Input Monitoring / Accessibility permissions every time — symptom is
+# CGEventTap silently dropping events. Pinning the identifier to the bundle id
+# keeps TCC entries reusable across builds (still requires a re-grant when
+# macOS sees a new cdhash for the first time, but only once).
+codesign --force --sign - --identifier com.tabtypist.TabTypist "${APP_DIR}"
+
 echo "==> Done: ${APP_DIR}"
 ls -lh "${APP_DIR}/Contents/MacOS/" "${APP_DIR}/Contents/Resources/"

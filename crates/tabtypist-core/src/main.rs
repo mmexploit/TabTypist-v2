@@ -25,12 +25,16 @@ use tracing::{info, warn};
 /// Payload broadcast through the debounce channel on every contextUpdate.
 #[derive(Clone, Debug)]
 struct ContextUpdate {
-    prefix:        String,
-    suffix:        String,
-    caret_x:       f64,
-    caret_y:       f64,
-    caret_height:  f64,
-    app_bundle_id: String,
+    prefix:         String,
+    suffix:         String,
+    caret_x:        f64,
+    caret_y:        f64,
+    caret_height:   f64,
+    input_frame_x:  f64,
+    input_frame_y:  f64,
+    input_frame_w:  f64,
+    input_frame_h:  f64,
+    app_bundle_id:  String,
 }
 
 #[tokio::main]
@@ -148,6 +152,16 @@ async fn main() -> Result<()> {
                     move || completer.complete(&prefix_c, 25)
                 ).await;
 
+                // Stale-completion guard: if the user typed during inference, the watch
+                // channel now holds a newer prefix. Cotabby calls this "workID drift" —
+                // showing the result for an old prefix would paint ghost text at a caret
+                // position the user has already moved past, overlapping live typed text.
+                let latest_prefix = rx.borrow().as_ref().map(|u| u.prefix.clone());
+                if latest_prefix.as_deref() != Some(update.prefix.as_str()) {
+                    info!("discarding stale completion (prefix advanced during inference)");
+                    continue;
+                }
+
                 match result {
                     Ok(Ok(raw)) if !raw.is_empty() => {
                         let text = model_runtime::truncate_at_sentence_boundary(raw);
@@ -175,10 +189,14 @@ async fn main() -> Result<()> {
                             info!("showOverlay text={:?}", text);
                             let _ = transport_inf.lock().await
                                 .send_notification("showOverlay", serde_json::json!({
-                                    "x":      update.caret_x,
-                                    "y":      update.caret_y,
-                                    "height": update.caret_height,
-                                    "text":   text,
+                                    "x":           update.caret_x,
+                                    "y":           update.caret_y,
+                                    "height":      update.caret_height,
+                                    "inputFrameX": update.input_frame_x,
+                                    "inputFrameY": update.input_frame_y,
+                                    "inputFrameW": update.input_frame_w,
+                                    "inputFrameH": update.input_frame_h,
+                                    "text":        text,
                                 }))
                                 .await;
                         } else {
@@ -258,6 +276,11 @@ async fn handle_message(
             let caret_y         = params["caretY"].as_f64().unwrap_or(0.0);
             // 0.0 = AX couldn't determine caret bounds (Electron / terminal apps).
             let caret_height    = params["caretHeight"].as_f64().unwrap_or(0.0);
+            // Focused-field bounds in Cocoa coords; zero width/height = unavailable.
+            let input_frame_x   = params["inputFrameX"].as_f64().unwrap_or(0.0);
+            let input_frame_y   = params["inputFrameY"].as_f64().unwrap_or(0.0);
+            let input_frame_w   = params["inputFrameW"].as_f64().unwrap_or(0.0);
+            let input_frame_h   = params["inputFrameH"].as_f64().unwrap_or(0.0);
             let app_bundle_id   = params["appBundleId"].as_str().unwrap_or("").to_string();
             let is_secure_field = params["isSecureField"].as_bool().unwrap_or(false);
 
@@ -299,6 +322,14 @@ async fn handle_message(
                 }))
                 .await;
 
+            // NOTE: we intentionally do NOT send `hideOverlay` here. An aggressive hide on
+            // every contextUpdate clears the completion state in Swift (KeyCapture), so any
+            // spurious AX event between showOverlay and Tab press makes Tab fall through.
+            // The stale-completion guard in the debounce loop already prevents showing
+            // results for an outdated prefix; the worst remaining symptom is the previous
+            // overlay sitting at its old position for ~1 s while new inference runs, which
+            // is far less broken than Tab not accepting.
+
             // Publish to the debounce channel — do NOT spawn inference here.
             let _ = ctx_tx.send(Some(ContextUpdate {
                 prefix,
@@ -306,6 +337,10 @@ async fn handle_message(
                 caret_x,
                 caret_y,
                 caret_height,
+                input_frame_x,
+                input_frame_y,
+                input_frame_w,
+                input_frame_h,
                 app_bundle_id,
             }));
         }

@@ -26,10 +26,18 @@ final class AXMonitor: @unchecked Sendable {
         let bundleId = app.bundleIdentifier ?? "unknown"
         let pid = app.processIdentifier
 
-        // Hide overlay immediately when the user switches to a different app.
-        if bundleId != lastBundleId && !lastBundleId.isEmpty {
-            DispatchQueue.main.async { OverlayWindow.shared.hide() }
-        }
+        // If macOS briefly reports US as the frontmost app (this can happen when our
+        // non-activating overlay panel is ordered front), bail out of the entire poll.
+        // Otherwise the bundle-id branch below fires OverlayWindow.hide(), which
+        // clears the completion state and makes Tab fall through on the next keystroke.
+        let ourBundleId = Bundle.main.bundleIdentifier ?? ""
+        if !ourBundleId.isEmpty && bundleId == ourBundleId { return }
+
+        // Note: we intentionally do NOT hide-on-bundle-change here yet. Apps like
+        // Cursor briefly grab `frontmostApplication` while staying invisible, and
+        // their AX layer returns degenerate fields/carets. We defer the hide
+        // decision until we've validated that the new app actually exposes a real
+        // editing context (see the degenerate-AX check further down).
 
         let appRef = AXUIElementCreateApplication(pid)
         var focusedElement: AnyObject?
@@ -118,12 +126,51 @@ final class AXMonitor: @unchecked Sendable {
         let caretX   = caretRect.origin.x + useCharOffset
         let screenY  = primaryScreenHeight - caretRect.origin.y   // top of caret in Cocoa
 
-        fputs("AXMonitor: primaryH=\(primaryScreenHeight) axRect=\(caretRect) caretX=\(caretX) screenY=\(screenY) bundle=\(bundleId)\n", stderr)
+        // Input-field frame in Cocoa coords. Used downstream to clamp the overlay so it
+        // can't render past the edge of the host text view. Zero = unavailable.
+        var inputFrameAX = CGRect.zero
+        var frameVal: AnyObject?
+        if AXUIElementCopyAttributeValue(axElement, "AXFrame" as CFString, &frameVal) == .success,
+           let fv = frameVal {
+            AXValueGetValue(fv as! AXValue, .cgRect, &inputFrameAX)
+        }
+        let inputX = inputFrameAX.origin.x
+        let inputY = inputFrameAX.height > 0
+            ? primaryScreenHeight - inputFrameAX.origin.y - inputFrameAX.height
+            : 0
+        let inputW = inputFrameAX.width
+        let inputH = inputFrameAX.height
+
+        // Degenerate-AX guard. When an app briefly grabs `frontmostApplication`
+        // without a real focused text field (Cursor's ToDesktop helper, Slack
+        // notification windows, etc.), AX returns junk values like a 0×0 caret
+        // inside a 1×1 field. Letting that data flow further down would (a) clear
+        // the active completion via the prefix-change hide and (b) update
+        // lastPrefix/lastBundleId to garbage, so the next real poll from the
+        // user's actual app looks like an app switch *back*. Skip without
+        // touching state — the next real poll restores the previous flow.
+        if caretRect.height == 0 && inputW < 10 && inputH < 10 { return }
+
+        // Now that we've confirmed the new app exposes a real editing context,
+        // a true bundle change is a genuine app switch — hide the stale overlay.
+        if bundleId != lastBundleId && !lastBundleId.isEmpty {
+            DispatchQueue.main.async { OverlayWindow.shared.hide() }
+        }
 
         // Only report if prefix changed or app changed
         if prefix == lastPrefix && bundleId == lastBundleId { return }
         lastPrefix = prefix
         lastBundleId = bundleId
+
+        // Log once per real contextUpdate, not 20x/sec on idle polls.
+        fputs("AXMonitor: primaryH=\(primaryScreenHeight) axRect=\(caretRect) caretX=\(caretX) screenY=\(screenY) field=(\(inputX),\(inputY),\(inputW),\(inputH)) bundle=\(bundleId)\n", stderr)
+
+        // User actually typed something — the currently-visible completion (if any)
+        // was offered for an older prefix and would visually sit on top of the new
+        // input. Hide it now; the new overlay arrives after the Rust debounce +
+        // inference finishes for this latest prefix. Done client-side so there's no
+        // IPC round-trip and no Rust handler clearing completion state behind our back.
+        DispatchQueue.main.async { OverlayWindow.shared.hide() }
 
         // caretHeight=0 means AX couldn't determine caret bounds (Electron, terminal, etc.).
         // Send caretHeight=0 as a sentinel so Rust skips showOverlay for those apps.
@@ -135,19 +182,31 @@ final class AXMonitor: @unchecked Sendable {
             "caretX":        Double(caretX),
             "caretY":        Double(screenY),
             "caretHeight":   Double(caretRect.height),   // 0 = no valid caret bounds
+            "inputFrameX":   Double(inputX),
+            "inputFrameY":   Double(inputY),
+            "inputFrameW":   Double(inputW),
+            "inputFrameH":   Double(inputH),
             "appBundleId":   bundleId,
             "isSecureField": isSecure,
         ])
     }
 
-    // Returns the string index of the last character before caretPos that is not a newline.
-    // Returns nil if the prefix is empty or consists only of newlines.
+    // Returns the index (into `chars`) of the last character before the caret that is
+    // not a newline. Returns nil if the prefix is empty or consists only of newlines.
+    //
+    // Index discipline: AX's caretPos is in UTF-16 code units, the Swift String prefix
+    // we receive was constructed by Character count, and unicodeScalars iterate Unicode
+    // scalars. Those three are only equal for pure-ASCII text. Rather than try to
+    // re-index across systems, we just walk back from the end of `chars` — that's
+    // safe regardless of how prefix was built, and the result is used by the caller
+    // only to query 1-char AX bounds, which is itself a fuzzy heuristic.
     private func lastNonNewlineCharIndex(in prefix: String, caretPos: Int) -> Int? {
-        guard caretPos > 0 else { return nil }
-        var idx = caretPos - 1
         let chars = Array(prefix.unicodeScalars)
+        guard !chars.isEmpty else { return nil }
+        var idx = chars.count - 1
         while idx >= 0 {
-            if chars[idx].value != 0x0A && chars[idx].value != 0x0D { return idx }
+            let v = chars[idx].value
+            if v != 0x0A && v != 0x0D { return idx }
             idx -= 1
         }
         return nil
