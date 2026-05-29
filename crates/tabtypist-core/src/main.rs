@@ -1,4 +1,3 @@
-mod completion_engine;
 mod exclusion_engine;
 mod ipc;
 mod language_router;
@@ -8,7 +7,6 @@ mod settings_store;
 mod telemetry;
 
 use anyhow::{Context, Result};
-use completion_engine::CompletionContext;
 use exclusion_engine::ExclusionEngine;
 use ipc::{IpcTransport, RpcMessage};
 use language_router::LanguageRouter;
@@ -96,8 +94,8 @@ async fn main() -> Result<()> {
         settings.get().telemetry_enabled,
     );
 
-    let current_completion: Arc<Mutex<Option<completion_engine::CompletionEvent>>> =
-        Arc::new(Mutex::new(None));
+    // true = a completion is pending acceptance/dismissal (gates telemetry events).
+    let current_completion: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
 
     // Single watch channel for context updates.
     // The debounce task reads from here; handle_message writes to it.
@@ -122,15 +120,15 @@ async fn main() -> Result<()> {
                 // Block until a new context update arrives.
                 if rx.changed().await.is_err() { break; }
 
-                // Debounce: restart the 400 ms timer on every additional update.
-                // This means inference only starts 400 ms after the user stops typing.
+                // Debounce: restart the timer on every additional update.
+                // 250 ms balances responsiveness against firing on every keystroke.
                 'debounce: loop {
                     tokio::select! {
                         result = rx.changed() => {
                             if result.is_err() { break 'outer; }
                             // New update — restart the timer.
                         }
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
                             break 'debounce;
                         }
                     }
@@ -149,8 +147,9 @@ async fn main() -> Result<()> {
 
                 // Run inference on the blocking thread pool — serialised by this loop.
                 let prefix_c = update.prefix.clone();
+                let suffix_c = update.suffix.clone();
                 let result = tokio::task::spawn_blocking(
-                    move || completer.complete(&prefix_c, 25)
+                    move || completer.complete(&prefix_c, &suffix_c, 25)
                 ).await;
 
                 // Stale-completion guard: if the user typed during inference, the watch
@@ -170,19 +169,7 @@ async fn main() -> Result<()> {
                             info!("completion empty after truncation — suppressing overlay");
                             continue;
                         }
-                        let event = completion_engine::CompletionEvent {
-                            id: 1,
-                            text: text.clone(),
-                            context: CompletionContext {
-                                prefix:        update.prefix,
-                                suffix:        update.suffix,
-                                caret_x:       update.caret_x,
-                                caret_y:       update.caret_y,
-                                caret_height:  update.caret_height,
-                                app_bundle_id: update.app_bundle_id,
-                            },
-                        };
-                        *current_inf.lock().await = Some(event);
+                        *current_inf.lock().await = true;
 
                         // caret_height == 0 means AX couldn't determine caret position
                         // (Electron / terminal apps) — store the completion but skip the overlay.
@@ -250,18 +237,16 @@ async fn main() -> Result<()> {
 }
 
 /// Returns true when the prefix has enough context for a meaningful completion.
-/// Mirrors CoTypist's behaviour: require at least 2 words in the current sentence
-/// fragment so the model has a clear picture of the intended idea before suggesting.
+/// Trigger as soon as the current sentence fragment has at least one complete word —
+/// matching Cotypist's eager policy so completions appear from the first word onward.
 fn should_trigger_completion(prefix: &str) -> bool {
-    // Isolate the current sentence/line fragment: text after the last hard boundary.
     let tail = prefix
         .rsplit(|c: char| c == '\n' || c == '.' || c == '!' || c == '?')
         .next()
         .unwrap_or(prefix)
         .trim();
     let word_count = tail.split_whitespace().count();
-    // Two or more words gives the model a meaningful signal.
-    word_count >= 2
+    word_count >= 1
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -270,7 +255,7 @@ async fn handle_message(
     settings: &SettingsStore,
     exclusion: &ExclusionEngine,
     router: &Arc<Mutex<LanguageRouter>>,
-    current_completion: &Arc<Mutex<Option<completion_engine::CompletionEvent>>>,
+    current_completion: &Arc<Mutex<bool>>,
     ctx_tx: &Arc<tokio::sync::watch::Sender<Option<ContextUpdate>>>,
     transport: &Arc<Mutex<IpcTransport>>,
     telemetry: &TelemetryClient,
@@ -377,14 +362,16 @@ async fn handle_message(
         }
 
         "acceptCompletion" => {
-            if current_completion.lock().await.take().is_some() {
-                telemetry.record(TelemetryEvent::CompletionAccepted { model_id: "qwen2.5-1.5b-q4".into() });
+            let was_pending = std::mem::replace(&mut *current_completion.lock().await, false);
+            if was_pending {
+                telemetry.record(TelemetryEvent::CompletionAccepted { model_id: "qwen2.5-1.5b-base-q4".into() });
             }
         }
 
         "dismissCompletion" => {
-            if current_completion.lock().await.take().is_some() {
-                telemetry.record(TelemetryEvent::CompletionDismissed { model_id: "qwen2.5-1.5b-q4".into() });
+            let was_pending = std::mem::replace(&mut *current_completion.lock().await, false);
+            if was_pending {
+                telemetry.record(TelemetryEvent::CompletionDismissed { model_id: "qwen2.5-1.5b-base-q4".into() });
             }
         }
 

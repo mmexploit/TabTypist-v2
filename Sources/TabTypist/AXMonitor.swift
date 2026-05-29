@@ -197,6 +197,29 @@ final class AXMonitor: @unchecked Sendable {
 
         // Only report if prefix changed or app changed
         if prefix == lastPrefix && bundleId == lastBundleId { return }
+
+        // Word-by-word partial accept: the user just accepted one word via Tab.
+        // Instead of hiding the overlay and waiting for new inference (250ms+ gap),
+        // reposition the remaining ghost text at the updated caret and skip the
+        // contextUpdate so Rust doesn't re-infer. The flag is consumed exactly once.
+        if bundleId == lastBundleId && KeyCapture.shared.isWordByWordInProgress {
+            KeyCapture.shared.clearWordByWordFlag()
+            lastPrefix = prefix
+            let remaining = KeyCapture.shared.pendingCompletionText
+            if !remaining.isEmpty && caretRect.height > 0 {
+                let frame: CGRect? = inputFrameAX.height > 0
+                    ? CGRect(x: inputX, y: inputY, width: inputW, height: inputH)
+                    : nil
+                DispatchQueue.main.async {
+                    OverlayWindow.shared.show(
+                        text: remaining, x: caretX, y: screenY,
+                        caretHeight: caretRect.height, fontSize: axFontSize,
+                        inputFrame: frame)
+                }
+            }
+            return
+        }
+
         lastPrefix = prefix
         lastBundleId = bundleId
 

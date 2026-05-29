@@ -12,6 +12,10 @@ _Avoid_: Suggestion, ghost text, prediction (use **Completion** in user-facing c
 The act of committing a **Completion** into the focused text field, via Tab.
 _Avoid_: Confirm, insert, apply.
 
+**Partial Acceptance**:
+The act of committing one word of a multi-word **Completion** via Tab, leaving the remainder visible as ghost text at the updated caret position. Does not notify Rust or trigger new inference; the remaining ghost text is repositioned by the next AX poll.
+_Avoid_: Partial confirm, partial insert.
+
 **Dismissal**:
 The act of rejecting an unaccepted **Completion**, via Escape or by continuing to type something that no longer matches.
 _Avoid_: Cancel, reject.

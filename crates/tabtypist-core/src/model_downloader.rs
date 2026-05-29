@@ -29,10 +29,14 @@ impl ModelCatalog {
     pub fn entries() -> Vec<ModelEntry> {
         vec![
             ModelEntry {
-                id: "qwen2.5-1.5b-q4".to_string(),
+                id: "qwen2.5-1.5b-base-q4".to_string(),
                 display_name: "Qwen 2.5 1.5B (English, ~900 MB)".to_string(),
                 language: "en".to_string(),
-                url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf".to_string(),
+                // Base (non-instruct) model — better text continuation quality.
+                // Qwen publishes no official base GGUF; this is a community repackage.
+                // The maintainer verifies the file, signs with TabTypist's Ed25519 key,
+                // and may rehost before release. SHA-256 + signature are updated at that time.
+                url: "https://huggingface.co/neopolita/qwen2.5-1.5b-gguf/resolve/main/qwen2.5-1.5b_q4_k_m.gguf".to_string(),
                 size_bytes: 986_000_000,
                 sha256: "placeholder_sha256_updated_at_release".to_string(),
                 ed25519_signature: "placeholder_sig_updated_at_release".to_string(),

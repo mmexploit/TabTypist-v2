@@ -12,16 +12,47 @@ final class KeyCapture: @unchecked Sendable {
     private var healthTimer: Timer?
     private var retryTimer: Timer?
     private(set) var completionIsVisible: Bool = false
-    private var pendingCompletionText: String = ""
+    private(set) var pendingCompletionText: String = ""
+
+    // Set when the user accepted one word of a multi-word completion.
+    // AXMonitor checks this flag to reposition the overlay instead of
+    // hiding it and triggering new inference.
+    private(set) var isWordByWordInProgress: Bool = false
 
     func setCompletion(_ text: String) {
         pendingCompletionText = text
         completionIsVisible = !text.isEmpty
+        isWordByWordInProgress = false
     }
 
     func clearCompletion() {
         pendingCompletionText = ""
         completionIsVisible = false
+        isWordByWordInProgress = false
+    }
+
+    func clearWordByWordFlag() {
+        isWordByWordInProgress = false
+    }
+
+    // Returns the next word (up to and including the trailing space) and the remainder.
+    private func nextWord(from text: String) -> (word: String, remaining: String) {
+        guard !text.isEmpty else { return ("", "") }
+        var idx = text.startIndex
+        var seenNonSpace = false
+        while idx < text.endIndex {
+            let c = text[idx]
+            if c == " " || c == "\t" {
+                if seenNonSpace {
+                    idx = text.index(after: idx) // include the trailing space
+                    break
+                }
+            } else {
+                seenNonSpace = true
+            }
+            idx = text.index(after: idx)
+        }
+        return (String(text[..<idx]), String(text[idx...]))
     }
 
     func start() {
@@ -125,18 +156,29 @@ final class KeyCapture: @unchecked Sendable {
         switch keyCode {
         case Int64(kVK_Tab):
             if completionIsVisible {
-                let text = pendingCompletionText
-                clearCompletion()
-                // Do NOT post the synthetic Cmd+V from inside this tap callback:
-                // posting re-enters our own tap and the events are often dropped
-                // ("Tab consumed but nothing inserted"). Returning nil consumes
-                // the Tab; the paste runs on the main run loop where it's reliable.
-                DispatchQueue.main.async {
-                    OverlayWindow.shared.hide()
-                    self.insertCompletion(text)
-                    IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
+                let (word, rest) = nextWord(from: pendingCompletionText)
+                // Do NOT post Cmd+V from inside the tap callback — posting re-enters
+                // our tap and events are often dropped. Return nil to consume the Tab;
+                // the paste runs on the main run loop where it is reliable.
+                if rest.isEmpty {
+                    // Last (or only) word — full acceptance.
+                    clearCompletion()
+                    DispatchQueue.main.async {
+                        OverlayWindow.shared.hide()
+                        self.insertCompletion(word)
+                        IPCBridge.shared.notify(method: "acceptCompletion", params: [:])
+                    }
+                } else {
+                    // More words remain — partial acceptance (Cotypist style).
+                    // Set the flag so the next AXMonitor poll repositions the overlay
+                    // with the remaining text instead of hiding and re-inferring.
+                    pendingCompletionText = rest
+                    isWordByWordInProgress = true
+                    DispatchQueue.main.async {
+                        self.insertCompletion(word)
+                    }
                 }
-                return nil // consume the Tab
+                return nil // consume the Tab in both cases
             }
             return Unmanaged.passRetained(event)
 
