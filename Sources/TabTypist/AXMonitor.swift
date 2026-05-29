@@ -14,11 +14,39 @@ final class AXMonitor: @unchecked Sendable {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             self?.poll()
         }
+
+        // Hide the overlay immediately on any real app activation. The poll loop only hides
+        // after the new app successfully returns AX text data — if you navigate to the
+        // desktop or any app with no focused text field the early-return guards fire first
+        // and the overlay stays up. This notification fires for every genuine foreground
+        // transition (unlike frontmostApplication polling, it is not affected by invisible
+        // helper processes briefly grabbing the frontmost slot).
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(appDidActivate(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+    }
+
+    @objc private func appDidActivate(_ note: Notification) {
+        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              let bundleId = app.bundleIdentifier else { return }
+        let ourBundleId = Bundle.main.bundleIdentifier ?? ""
+        guard bundleId != ourBundleId else { return }
+
+        if !lastBundleId.isEmpty && bundleId != lastBundleId {
+            DispatchQueue.main.async { OverlayWindow.shared.hide() }
+        }
+        // Update state so the poll loop agrees on the current app and won't double-hide.
+        lastBundleId = bundleId
+        lastPrefix = ""
     }
 
     func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     private func poll() {
