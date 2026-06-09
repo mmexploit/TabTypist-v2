@@ -22,6 +22,14 @@ final class AXMonitor: @unchecked Sendable {
     // attached to the new app's completions.
     private var latestVisualContext: String = ""
     private var latestVisualContextBundle: String = ""
+    // OCR is expensive (ScreenCaptureKit + Vision). Throttle it: at most one capture per
+    // `ocrMinInterval`, and never overlap captures (`ocrInFlight`) — overlapping requests
+    // are what made it run constantly and balloon memory. An app switch (`lastOCRBundle`
+    // changes) resets the throttle once so the new app gets fresh context immediately.
+    private var lastOCRCapture: Date = .distantPast
+    private var lastOCRBundle: String = ""
+    private var ocrInFlight: Bool = false
+    private static let ocrMinInterval: TimeInterval = 2.0
 
     // Adaptive backoff: start at 80 ms, double after 5 unchanged polls, cap at 200 ms.
     private var currentPollInterval: TimeInterval = 0.08
@@ -387,26 +395,38 @@ final class AXMonitor: @unchecked Sendable {
         }
         #endif // canImport(FoundationModels)
 
-        // Kick off OCR for the next contextUpdate cycle (non-blocking).
+        // Kick off OCR for the next contextUpdate cycle (non-blocking), THROTTLED.
         // Both frames are AX coords (top-left origin), which is what ScreenCaptureKit's
         // sourceRect also uses — so no flips are needed downstream.
         let ocrField = inputFrameAX
         let ocrPid = pid
         let ocrBundle = bundleId
-        // Only reuse the cached OCR if it belongs to the app we're now typing in —
-        // otherwise send nothing rather than another app's stale context.
-        let visualCtxCopy = (latestVisualContextBundle == bundleId) ? latestVisualContext : ""
-        Task.detached(priority: .utility) { [weak self] in
-            guard let self else { return }
-            if let text = await VisualContextCapture.shared.capture(
-                pid: ocrPid, fieldFrameCG: ocrField
-            ) {
+        // App switch → allow one immediate capture (reset the throttle once); otherwise
+        // limit to one capture per ocrMinInterval and never while another is in flight.
+        if lastOCRBundle != bundleId {
+            lastOCRBundle = bundleId
+            lastOCRCapture = .distantPast
+        }
+        if !ocrInFlight && Date().timeIntervalSince(lastOCRCapture) >= AXMonitor.ocrMinInterval {
+            ocrInFlight = true
+            lastOCRCapture = Date()
+            Task.detached(priority: .utility) { [weak self] in
+                guard let self else { return }
+                let text = await VisualContextCapture.shared.capture(
+                    pid: ocrPid, fieldFrameCG: ocrField
+                )
                 await MainActor.run {
-                    self.latestVisualContext = text
-                    self.latestVisualContextBundle = ocrBundle
+                    if let text = text {
+                        self.latestVisualContext = text
+                        self.latestVisualContextBundle = ocrBundle
+                    }
+                    self.ocrInFlight = false
                 }
             }
         }
+        // Only reuse the cached OCR if it belongs to the app we're now typing in —
+        // otherwise send nothing rather than another app's stale context.
+        let visualCtxCopy = (latestVisualContextBundle == bundleId) ? latestVisualContext : ""
 
         // caretHeight=0 means AX couldn't determine caret bounds (Electron, terminal, etc.).
         // Cast CGFloat → Double explicitly: AnyCodable only encodes Double,

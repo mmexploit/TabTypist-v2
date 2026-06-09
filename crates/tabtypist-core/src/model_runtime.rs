@@ -137,9 +137,13 @@ fn inference_thread(rx: mpsc::Receiver<InferRequest>, model_path: PathBuf) -> Re
     let model = llama_cpp_2::model::LlamaModel::load_from_file(&backend, &model_path, &model_params)
         .with_context(|| format!("loading model from {}", model_path.display()))?;
 
+    // n_batch (logical batch) must be >= the largest single decode we submit.
+    // We prefill the entire token stream in one batch, which can be up to N_CTX
+    // tokens, so keep n_batch == N_CTX. llama.cpp splits this into physical
+    // micro-batches of n_ubatch (default 512) internally for causal decoding.
     let ctx_params = LlamaContextParams::default()
         .with_n_ctx(Some(NonZeroU32::new(N_CTX).unwrap()))
-        .with_n_batch(512);
+        .with_n_batch(N_CTX);
     let mut ctx = model.new_context(&backend, ctx_params)?;
 
     // Tokens currently committed to the KV cache (prefix-only, no FIM framing).
@@ -321,11 +325,15 @@ fn do_complete_instruct(
     let mut sections: Vec<String> = vec![
         "You are an inline autocomplete inside a text field. Continue the user's text \
          from EXACTLY where they stopped, writing only the characters that come next. \
-         If they are mid-word or mid-sentence, finish it naturally. If their sentence \
-         already looks complete, add the next clause they would most likely type (e.g. \
-         a reason or detail). Use the background ONLY to make the continuation specific \
-         to their topic — never answer, reply to, or quote the background. Output only \
-         the continuation, nothing else.".into(),
+         Keep it SHORT: finish the current word or clause and STOP — at most one short \
+         sentence. Never ramble or chain clauses together with repeated 'and', 'so', or \
+         commas. If they are mid-word or mid-sentence, finish it naturally. If their \
+         sentence already looks complete, or you have nothing specific to add from the \
+         background, offer just a brief transition the user would likely type next — a \
+         word or two such as 'and then', 'which', 'because', 'so that' — rather than \
+         inventing facts or repeating yourself. Use the background only as a loose hint \
+         for the topic; never answer, reply to, quote, or copy it. Output only the \
+         continuation, nothing else.".into(),
     ];
 
     if !instr_ctx.user_name.is_empty() {
@@ -348,8 +356,17 @@ fn do_complete_instruct(
         sections.push(format!("The user is typing in {}.", instr_ctx.app_name));
     }
     if !instr_ctx.visual_context.is_empty() {
-        sections.push("Nearby on-screen text (e.g. the conversation being replied to):".into());
-        sections.push(instr_ctx.visual_context.clone());
+        // Low-noise background: flatten to one line and keep only the tail (nearest the
+        // caret = most relevant) so a wall of screen text can't dominate the prompt or
+        // be copied wholesale. Labelled as a loose hint, not "the message to reply to".
+        let screen = instr_ctx.visual_context.trim();
+        let capped: String = if screen.chars().count() > 500 {
+            screen.chars().rev().take(500).collect::<Vec<char>>().into_iter().rev().collect()
+        } else {
+            screen.to_string()
+        };
+        sections.push("Nearby on screen (loose topic hint only):".into());
+        sections.push(capped.replace('\n', " "));
     }
     if !instr_ctx.clipboard_context.is_empty() {
         let clip = &instr_ctx.clipboard_context;
@@ -420,7 +437,10 @@ fn do_complete_instruct(
     .collect();
 
     let mut sampler = LlamaSampler::chain_simple([
-        LlamaSampler::penalties(64, 1.1, 0.0, 0.0),
+        // Wider window + stronger repeat penalty than the base path: the instruct model's
+        // failure mode here is looping a connector ("and … and … and"), so penalise
+        // recently-used tokens harder to break the chain.
+        LlamaSampler::penalties(128, 1.3, 0.0, 0.0),
         LlamaSampler::temp(0.2), // slightly more creative than base path
         LlamaSampler::min_p(0.05, 1),
         LlamaSampler::greedy(),
@@ -430,7 +450,16 @@ fn do_complete_instruct(
     let mut result = String::new();
     let mut pos = tokens.len() as i32;
 
+    // Confidence tracking — cotabby's text-stream gate (LlamaGenerationOptions.confidenceFloor).
+    // Accumulate the average per-token log-probability of the emitted tokens. When the model
+    // runs past a natural stopping point and keeps the sentence going by inventing/chaining,
+    // its per-token confidence falls; a completion whose average drops below the floor is
+    // suppressed wholesale rather than shown as a run-on. Tunable via TABTYPIST_CONFIDENCE_FLOOR.
+    let mut sum_lp = 0f64;
+    let mut n_lp = 0usize;
+
     let mut token = sampler.sample(ctx, last_idx as i32);
+    let mut cur_lp = token_logprob(ctx, last_idx as i32, token);
     sampler.accept(token);
 
     for _ in 0..max_tokens {
@@ -439,9 +468,20 @@ fn do_complete_instruct(
         if endoftext_id.map_or(false, |id| token == id) { break; }
         if stop_tokens.contains(&token) { break; }
 
+        // The token is part of the output — fold its confidence into the running average.
+        sum_lp += cur_lp as f64;
+        n_lp += 1;
+
         let piece = model.token_to_piece(token, &mut decoder, false, None)?;
         if !piece.is_empty() {
             result.push_str(&piece);
+            // Hard stop on a word stutter ("and and", "the the"): the model has started
+            // looping. Drop the duplicate and stop — a single connector left behind is a
+            // fine transitional completion ("…and"); a repeated one never is.
+            if let Some(trimmed) = strip_trailing_word_stutter(&result) {
+                result = trimmed;
+                break;
+            }
             if multi_line {
                 if result.contains("\n\n") { break; }
             } else if ends_at_sentence_boundary(&result) {
@@ -455,7 +495,24 @@ fn do_complete_instruct(
         pos += 1;
 
         token = sampler.sample(ctx, 0);
+        cur_lp = token_logprob(ctx, 0, token);
         sampler.accept(token);
+    }
+
+    // Confidence floor: suppress a low-confidence (rambling/invented) completion entirely.
+    let floor = std::env::var("TABTYPIST_CONFIDENCE_FLOOR")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(DEFAULT_CONFIDENCE_FLOOR);
+    let avg_lp = if n_lp > 0 { sum_lp / n_lp as f64 } else { 0.0 };
+    if std::env::var("TABTYPIST_LOG_PROMPT").is_ok() {
+        tracing::info!(
+            "CONFIDENCE: avg_logprob={:.3} over {} tokens (floor={:.3}) raw={:?}",
+            avg_lp, n_lp, floor, result
+        );
+    }
+    if n_lp > 0 && avg_lp < floor {
+        return Ok(String::new());
     }
 
     let mut normalized = normalize_completion(result, prefix);
@@ -571,6 +628,56 @@ fn single_token(
 }
 
 // ── Sentence-boundary helpers ─────────────────────────────────────────────────
+
+/// If `text` ends with the same word twice in a row ("and and", "the the"), return it
+/// with that trailing duplicate removed; otherwise `None`. Case-insensitive, alphabetic
+/// words only (so "ha ha" or a deliberate "no no" of two different runs aren't special-
+/// cased away — both words must be identical and the duplicate is the final token run).
+fn strip_trailing_word_stutter(text: &str) -> Option<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 2 {
+        return None;
+    }
+    let last = words[words.len() - 1];
+    let prev = words[words.len() - 2];
+    if last.eq_ignore_ascii_case(prev) && last.chars().all(|c| c.is_alphabetic()) {
+        // Cut at the start of the final (duplicate) occurrence.
+        if let Some(pos) = text.rfind(last) {
+            return Some(text[..pos].trim_end().to_string());
+        }
+    }
+    None
+}
+
+/// Default average per-token log-probability below which an instruct completion is
+/// suppressed as low-confidence — cotabby's `LlamaGenerationOptions.confidenceFloor`.
+/// Defaults to disabled (`-inf`), matching cotabby: calibration on gemma-4-E2B (see
+/// examples/calibrate_confidence.rs) showed that with our near-greedy sampling the model
+/// stays confident (~-0.3 avg) even when inventing, so a *good* completion and pure noise
+/// score the same — no fixed floor separates them. Kept wired and tunable via
+/// TABTYPIST_CONFIDENCE_FLOOR (e.g. -0.5) for experimentation, but off by default.
+const DEFAULT_CONFIDENCE_FLOOR: f64 = f64::NEG_INFINITY;
+
+/// Log-probability the model assigned to `token` at output position `idx`, computed as a
+/// numerically-stable log-softmax over the raw logits (`logit[t] - logsumexp(logits)`).
+fn token_logprob(
+    ctx: &llama_cpp_2::context::LlamaContext,
+    idx: i32,
+    token: LlamaToken,
+) -> f32 {
+    let logits = ctx.get_logits_ith(idx);
+    let id = token.0 as usize;
+    if id >= logits.len() {
+        return 0.0;
+    }
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let mut sumexp = 0f32;
+    for &l in logits {
+        sumexp += (l - max).exp();
+    }
+    let logsumexp = max + sumexp.ln();
+    logits[id] - logsumexp
+}
 
 fn ends_at_sentence_boundary(text: &str) -> bool {
     text.ends_with(|c| matches!(c, '.' | '!' | '?' | '\n'))
@@ -731,6 +838,29 @@ impl Completer for StubCompleter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stutter_strips_repeated_connector() {
+        assert_eq!(
+            strip_trailing_word_stutter("I went to the store and and"),
+            Some("I went to the store and".to_string())
+        );
+    }
+
+    #[test]
+    fn stutter_case_insensitive() {
+        assert_eq!(
+            strip_trailing_word_stutter("Wait The the"),
+            Some("Wait The".to_string())
+        );
+    }
+
+    #[test]
+    fn stutter_ignores_non_duplicates() {
+        assert_eq!(strip_trailing_word_stutter("a clean continuation here"), None);
+        // Different words that merely share a prefix are not a stutter.
+        assert_eq!(strip_trailing_word_stutter("and android"), None);
+    }
 
     #[test]
     fn truncate_at_period() {
