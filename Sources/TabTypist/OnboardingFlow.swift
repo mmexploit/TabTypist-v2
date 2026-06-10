@@ -15,17 +15,15 @@ struct ModelTierInfo: Identifiable {
     let minRAMGB: Int
     let isInstruct: Bool
 
+    // Base checkpoints only — instruct models reply to context and leak chat
+    // scaffolding into ghost text, so every tier now uses the base-continuation path.
     static let catalog: [ModelTierInfo] = [
-        ModelTierInfo(id: "smollm2-135m-instruct-q8",  tier: "nano",        displayName: "SmolLM2 135M",    sizeGB: 0.14, minRAMGB: 0,  isInstruct: true),
-        ModelTierInfo(id: "qwen3-0.6b-q4km",           tier: "mini",        displayName: "Qwen3 0.6B",      sizeGB: 0.41, minRAMGB: 8,  isInstruct: false),
-        ModelTierInfo(id: "qwen3-1.7b-q4km",           tier: "standard",    displayName: "Qwen3 1.7B",      sizeGB: 1.08, minRAMGB: 8,  isInstruct: false),
-        ModelTierInfo(id: "qwen3-4b-q4km",             tier: "performance", displayName: "Qwen3 4B",        sizeGB: 2.42, minRAMGB: 16, isInstruct: false),
-        // quality: Qwen3 8B (default, open) or Gemma 4 E2B (via unsloth)
-        ModelTierInfo(id: "qwen3-8b-q4km",             tier: "quality",     displayName: "Qwen3 8B",        sizeGB: 5.20, minRAMGB: 16, isInstruct: true),
-        ModelTierInfo(id: "gemma4-e2b-it-q4km",        tier: "quality",     displayName: "Gemma 4 E2B",     sizeGB: 3.10, minRAMGB: 16, isInstruct: true),
-        // pro: Qwen3 14B (default, open) or Gemma 4 E4B (via unsloth)
-        ModelTierInfo(id: "qwen3-14b-q4km",            tier: "pro",         displayName: "Qwen3 14B",       sizeGB: 9.20, minRAMGB: 24, isInstruct: true),
-        ModelTierInfo(id: "gemma4-e4b-it-q4km",        tier: "pro",         displayName: "Gemma 4 E4B",     sizeGB: 5.00, minRAMGB: 24, isInstruct: true),
+        ModelTierInfo(id: "qwen3-0.6b-base-q4km",  tier: "nano",        displayName: "Qwen3 0.6B Base",   sizeGB: 0.40, minRAMGB: 0,  isInstruct: false),
+        ModelTierInfo(id: "qwen35-0.8b-base-q6k",  tier: "mini",        displayName: "Qwen3.5 0.8B Base", sizeGB: 0.63, minRAMGB: 8,  isInstruct: false),
+        ModelTierInfo(id: "qwen35-2b-base-q4km",   tier: "standard",    displayName: "Qwen3.5 2B Base",   sizeGB: 1.27, minRAMGB: 8,  isInstruct: false),
+        ModelTierInfo(id: "qwen3-4b-base-q4km",    tier: "performance", displayName: "Qwen3 4B Base",     sizeGB: 2.50, minRAMGB: 16, isInstruct: false),
+        ModelTierInfo(id: "gemma4-e2b-base-q6k",   tier: "quality",     displayName: "Gemma 4 E2B Base",  sizeGB: 3.85, minRAMGB: 16, isInstruct: false),
+        ModelTierInfo(id: "gemma4-e4b-base-q4km",  tier: "pro",         displayName: "Gemma 4 E4B Base",  sizeGB: 5.34, minRAMGB: 24, isInstruct: false),
     ]
 
     var sizeLabel: String { String(format: "%.1f GB", sizeGB) }
@@ -52,7 +50,7 @@ final class OnboardingState: ObservableObject {
         let ram = detectPhysicalRAMGB()
         let tier = recommendedTier(ramGB: ram)
         return ModelTierInfo.catalog.first(where: { $0.tier == tier })?.id
-            ?? "qwen3-1.7b-q4km"
+            ?? "qwen35-2b-base-q4km"
     }()
 
     // Download state
@@ -566,7 +564,7 @@ struct ModelDownloadStep: View {
     private let ramGB = detectPhysicalRAMGB()
     private var recommendedId: String {
         let tier = recommendedTier(ramGB: ramGB)
-        return ModelTierInfo.catalog.first(where: { $0.tier == tier })?.id ?? "qwen3-1.7b-q4km"
+        return ModelTierInfo.catalog.first(where: { $0.tier == tier })?.id ?? "qwen35-2b-base-q4km"
     }
 
     var body: some View {

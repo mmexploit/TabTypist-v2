@@ -147,17 +147,35 @@ async fn main() -> Result<()> {
             // post-acceptance repetition loop where the model keeps re-suggesting
             // the text the user just accepted (now part of the prefix).
             let mut last_shown: Option<String> = None;
+
+            // Debounce before kicking off inference. cotabby ships 20 ms, but that's
+            // tuned for sub-1B models; on a multi-billion-param model (e.g. Qwen3 4B)
+            // every micro-pause between keystrokes launches a full decode, so rapid
+            // typing fires heavy back-to-back inferences and the machine visibly drags.
+            // Default to 280 ms (fire shortly after the user actually pauses), and
+            // allow TABTYPIST_DEBOUNCE_MS to override it for tuning without a rebuild.
+            let debounce_ms: u64 = std::env::var("TABTYPIST_DEBOUNCE_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|&ms| ms > 0)
+                .unwrap_or(280);
+            info!("completion debounce: {debounce_ms} ms");
+
             'outer: loop {
                 // Block until a new context update arrives.
                 if rx.changed().await.is_err() { break; }
 
-                // Debounce: restart the timer on every additional update.
+                'process: loop {
+                // Debounce: restart the timer on every additional update so inference
+                // only fires once typing pauses. Collapsing keystroke bursts here is
+                // what keeps a heavy model from running a decode per keystroke. A
+                // superseded in-flight generation is still cancelled cooperatively.
                 'debounce: loop {
                     tokio::select! {
                         result = rx.changed() => {
                             if result.is_err() { break 'outer; }
                         }
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(75)) => {
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(debounce_ms)) => {
                             break 'debounce;
                         }
                     }
@@ -165,13 +183,13 @@ async fn main() -> Result<()> {
 
                 let update = match rx.borrow().clone() {
                     Some(u) => u,
-                    None    => continue,
+                    None    => continue 'outer,
                 };
 
                 let s = settings_inf.get();
                 let completer = match router_inf.lock().await.route(&update.prefix, &s) {
                     Some(c) => c,
-                    None    => continue,
+                    None    => continue 'outer,
                 };
 
                 let prefix_c = update.prefix.clone();
@@ -229,17 +247,47 @@ async fn main() -> Result<()> {
                     info!("visual_context text: {}", instr_ctx.visual_context.replace('\n', " | "));
                 }
 
-                let result = tokio::task::spawn_blocking(
+                // Cooperative cancellation (cotabby): if a newer context update lands
+                // while inference is running, flag the in-flight decode to bail after
+                // its current token, then immediately regenerate from the latest state.
+                // A cancelled generation leaves the KV cache valid — the rerun reuses it.
+                let cancel = completer.cancel_handle();
+                if let Some(flag) = &cancel {
+                    flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                let mut task = tokio::task::spawn_blocking(
                     move || completer.complete_with_context(&prefix_c, &suffix_c, max_tokens, multi_line, instr_ctx)
-                ).await;
+                );
+                let mut superseded = false;
+                let mut channel_closed = false;
+                let result = loop {
+                    tokio::select! {
+                        r = &mut task => break r,
+                        changed = rx.changed(), if !superseded && !channel_closed => {
+                            match changed {
+                                Ok(()) => {
+                                    superseded = true;
+                                    if let Some(flag) = &cancel {
+                                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
+                                Err(_) => channel_closed = true,
+                            }
+                        }
+                    }
+                };
+                if channel_closed { break 'outer; }
+                if superseded {
+                    info!("superseded during inference — regenerating with latest context");
+                    continue 'process;
+                }
 
-                // Stale-completion guard: if the user typed during inference, the watch
-                // channel now holds a newer prefix.  Showing a result for an old prefix
-                // would paint ghost text at a position the user has already moved past.
+                // Stale-completion guard (backstop): a newer prefix can still land in the
+                // window between the decode finishing and the select waking up.
                 let latest_prefix = rx.borrow().as_ref().map(|u| u.prefix.clone());
                 if latest_prefix.as_deref() != Some(update.prefix.as_str()) {
                     info!("discarding stale completion (prefix advanced during inference)");
-                    continue;
+                    continue 'outer;
                 }
 
                 match result {
@@ -247,14 +295,21 @@ async fn main() -> Result<()> {
                         let text = model_runtime::truncate_at_sentence_boundary(raw);
                         if text.is_empty() {
                             info!("completion empty after truncation — suppressing overlay");
-                            continue;
+                            continue 'outer;
+                        }
+                        // Trailing-duplication guard (cotabby): never surface a completion
+                        // that mostly retypes the text already after the caret — accepting
+                        // it would insert a duplicate.
+                        if model_runtime::duplicates_trailing_text(&text, &update.suffix) {
+                            info!("suppressing completion that duplicates trailing text");
+                            continue 'outer;
                         }
                         // Repetition guard: if this is the same suggestion we just
                         // showed (typically right after the user accepted it), don't
                         // surface it again — that's the "keeps repeating" loop.
                         if last_shown.as_deref() == Some(text.as_str()) {
                             info!("suppressing repeated completion {:?}", text);
-                            continue;
+                            continue 'outer;
                         }
                         last_shown = Some(text.clone());
                         *current_inf.lock().await = Some(text.clone());
@@ -285,6 +340,8 @@ async fn main() -> Result<()> {
                     Ok(Err(e)) => warn!("completion error: {e}"),
                     Err(e)     => warn!("spawn_blocking panicked: {e}"),
                 }
+                break 'process;
+                } // 'process
             }
         });
     }

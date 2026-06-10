@@ -40,108 +40,88 @@ pub struct ModelEntry {
 pub struct ModelCatalog;
 
 impl ModelCatalog {
-    /// Full six-tier catalog.  URLs and SHA-256 values marked `placeholder_*`
-    /// are filled in before each release after the maintainer verifies and
-    /// signs the GGUF file with the TabTypist Ed25519 key.
+    /// Full six-tier catalog — base checkpoints only (no instruct/chat models).
+    /// Both competing products converged on base-model continuation: instruct
+    /// models reply to context, echo prefixes, and leak chat scaffolding no
+    /// matter how the prompt is framed. mini/standard/quality/pro are the exact
+    /// GGUF files Cotabby 2 ships (field-validated for inline autocomplete);
+    /// nano/performance fill the remaining tiers from the same Qwen base family.
+    /// URLs and SHA-256 values marked `placeholder_*` are filled in before each
+    /// release after the maintainer verifies and signs the GGUF file with the
+    /// TabTypist Ed25519 key.
     pub fn entries() -> Vec<ModelEntry> {
         vec![
             ModelEntry {
-                id: "smollm2-135m-instruct-q8".to_string(),
-                display_name: "SmolLM2 135M (nano, 135 MB)".to_string(),
+                id: "qwen3-0.6b-base-q4km".to_string(),
+                display_name: "Qwen3 0.6B Base (nano, 0.4 GB)".to_string(),
                 language: "en".to_string(),
                 tier: "nano".to_string(),
-                model_kind: ModelKind::Instruct,
+                model_kind: ModelKind::Base,
                 min_ram_gb: 0,
-                url: "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf".to_string(),
-                size_bytes: 144_000_000,
-                sha256: "placeholder_sha256_smollm2_135m".to_string(),
-                ed25519_signature: "placeholder_sig_smollm2_135m".to_string(),
+                url: "https://huggingface.co/mradermacher/Qwen3-0.6B-Base-GGUF/resolve/main/Qwen3-0.6B-Base.Q4_K_M.gguf".to_string(),
+                size_bytes: 396_704_960,
+                sha256: "placeholder_sha256_qwen3_0_6b_base".to_string(),
+                ed25519_signature: "placeholder_sig_qwen3_0_6b_base".to_string(),
             },
             ModelEntry {
-                id: "qwen3-0.6b-q4km".to_string(),
-                display_name: "Qwen3 0.6B (mini, 390 MB)".to_string(),
+                id: "qwen35-0.8b-base-q6k".to_string(),
+                display_name: "Qwen3.5 0.8B Base (mini, 0.6 GB)".to_string(),
                 language: "en".to_string(),
                 tier: "mini".to_string(),
                 model_kind: ModelKind::Base,
                 min_ram_gb: 8,
-                url: "https://huggingface.co/bartowski/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf".to_string(),
-                size_bytes: 410_000_000,
-                sha256: "placeholder_sha256_qwen3_0_6b".to_string(),
-                ed25519_signature: "placeholder_sig_qwen3_0_6b".to_string(),
+                url: "https://huggingface.co/mradermacher/Qwen3.5-0.8B-Base-i1-GGUF/resolve/main/Qwen3.5-0.8B-Base.i1-Q6_K.gguf".to_string(),
+                size_bytes: 629_744_512,
+                sha256: "placeholder_sha256_qwen35_0_8b_base".to_string(),
+                ed25519_signature: "placeholder_sig_qwen35_0_8b_base".to_string(),
             },
             ModelEntry {
-                id: "qwen3-1.7b-q4km".to_string(),
-                display_name: "Qwen3 1.7B (standard, 1.0 GB)".to_string(),
+                id: "qwen35-2b-base-q4km".to_string(),
+                display_name: "Qwen3.5 2B Base (standard, 1.3 GB)".to_string(),
                 language: "en".to_string(),
                 tier: "standard".to_string(),
                 model_kind: ModelKind::Base,
                 min_ram_gb: 8,
-                url: "https://huggingface.co/bartowski/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf".to_string(),
-                size_bytes: 1_080_000_000,
-                sha256: "placeholder_sha256_qwen3_1_7b".to_string(),
-                ed25519_signature: "placeholder_sig_qwen3_1_7b".to_string(),
+                url: "https://huggingface.co/mradermacher/Qwen3.5-2B-Base-i1-GGUF/resolve/main/Qwen3.5-2B-Base.i1-Q4_K_M.gguf".to_string(),
+                size_bytes: 1_274_397_056,
+                sha256: "placeholder_sha256_qwen35_2b_base".to_string(),
+                ed25519_signature: "placeholder_sig_qwen35_2b_base".to_string(),
             },
             ModelEntry {
-                id: "qwen3-4b-q4km".to_string(),
-                display_name: "Qwen3 4B (performance, 2.3 GB)".to_string(),
+                id: "qwen3-4b-base-q4km".to_string(),
+                display_name: "Qwen3 4B Base (performance, 2.5 GB)".to_string(),
                 language: "en".to_string(),
                 tier: "performance".to_string(),
                 model_kind: ModelKind::Base,
                 min_ram_gb: 16,
-                url: "https://huggingface.co/bartowski/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf".to_string(),
-                size_bytes: 2_420_000_000,
-                sha256: "placeholder_sha256_qwen3_4b".to_string(),
-                ed25519_signature: "placeholder_sig_qwen3_4b".to_string(),
+                url: "https://huggingface.co/mradermacher/Qwen3-4B-Base-GGUF/resolve/main/Qwen3-4B-Base.Q4_K_M.gguf".to_string(),
+                size_bytes: 2_497_280_736,
+                sha256: "placeholder_sha256_qwen3_4b_base".to_string(),
+                ed25519_signature: "placeholder_sig_qwen3_4b_base".to_string(),
             },
-            // quality tier: Qwen3 8B (default, no auth needed) + Gemma 4 E2B via unsloth
             ModelEntry {
-                id: "qwen3-8b-q4km".to_string(),
-                display_name: "Qwen3 8B (quality, 5.2 GB)".to_string(),
+                id: "gemma4-e2b-base-q6k".to_string(),
+                display_name: "Gemma 4 E2B Base (quality, 3.8 GB)".to_string(),
                 language: "en".to_string(),
                 tier: "quality".to_string(),
-                model_kind: ModelKind::Instruct,
+                model_kind: ModelKind::Base,
                 min_ram_gb: 16,
-                url: "https://huggingface.co/bartowski/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf".to_string(),
-                size_bytes: 5_200_000_000,
-                sha256: "placeholder_sha256_qwen3_8b".to_string(),
-                ed25519_signature: "placeholder_sig_qwen3_8b".to_string(),
+                url: "https://huggingface.co/mradermacher/gemma-4-E2B-i1-GGUF/resolve/main/gemma-4-E2B.i1-Q6_K.gguf".to_string(),
+                size_bytes: 3_845_328_608,
+                sha256: "placeholder_sha256_gemma4_e2b_base".to_string(),
+                ed25519_signature: "placeholder_sig_gemma4_e2b_base".to_string(),
             },
             ModelEntry {
-                id: "gemma4-e2b-it-q4km".to_string(),
-                display_name: "Gemma 4 E2B (quality, 3.1 GB)".to_string(),
-                language: "en".to_string(),
-                tier: "quality".to_string(),
-                model_kind: ModelKind::Instruct,
-                min_ram_gb: 16,
-                url: "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf".to_string(),
-                size_bytes: 3_100_000_000,
-                sha256: "placeholder_sha256_gemma4_e2b".to_string(),
-                ed25519_signature: "placeholder_sig_gemma4_e2b".to_string(),
-            },
-            // pro tier: Qwen3 14B (default, no auth needed) + Gemma 4 E4B via unsloth
-            ModelEntry {
-                id: "qwen3-14b-q4km".to_string(),
-                display_name: "Qwen3 14B (pro, 9.2 GB)".to_string(),
+                id: "gemma4-e4b-base-q4km".to_string(),
+                display_name: "Gemma 4 E4B Base (pro, 5.3 GB)".to_string(),
                 language: "en".to_string(),
                 tier: "pro".to_string(),
-                model_kind: ModelKind::Instruct,
+                model_kind: ModelKind::Base,
                 min_ram_gb: 24,
-                url: "https://huggingface.co/bartowski/Qwen3-14B-GGUF/resolve/main/Qwen3-14B-Q4_K_M.gguf".to_string(),
-                size_bytes: 9_200_000_000,
-                sha256: "placeholder_sha256_qwen3_14b".to_string(),
-                ed25519_signature: "placeholder_sig_qwen3_14b".to_string(),
-            },
-            ModelEntry {
-                id: "gemma4-e4b-it-q4km".to_string(),
-                display_name: "Gemma 4 E4B (pro, 5.0 GB)".to_string(),
-                language: "en".to_string(),
-                tier: "pro".to_string(),
-                model_kind: ModelKind::Instruct,
-                min_ram_gb: 24,
-                url: "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf".to_string(),
-                size_bytes: 5_000_000_000,
-                sha256: "placeholder_sha256_gemma4_e4b".to_string(),
-                ed25519_signature: "placeholder_sig_gemma4_e4b".to_string(),
+                url: "https://huggingface.co/mradermacher/gemma-4-E4B-i1-GGUF/resolve/main/gemma-4-E4B.i1-Q4_K_M.gguf".to_string(),
+                size_bytes: 5_335_274_240,
+                sha256: "placeholder_sha256_gemma4_e4b_base".to_string(),
+                ed25519_signature: "placeholder_sig_gemma4_e4b_base".to_string(),
             },
         ]
     }
@@ -151,7 +131,7 @@ impl ModelCatalog {
     }
 
     pub fn default_for_language(lang: &str) -> Option<ModelEntry> {
-        // "standard" tier (Qwen3 1.7B) as the default: 1 GB, works on 8 GB Macs.
+        // "standard" tier (Qwen3.5 2B Base) as the default: 1.3 GB, works on 8 GB Macs.
         Self::entries()
             .into_iter()
             .find(|e| e.language == lang && e.tier == "standard")
@@ -369,11 +349,28 @@ mod tests {
         let entries = ModelCatalog::entries();
         let tiers: Vec<&str> = entries.iter().map(|e| e.tier.as_str()).collect();
         for t in ["nano", "mini", "standard", "performance", "quality", "pro"] {
-            assert!(tiers.contains(&t), "missing tier: {t}");
+            // Exactly one model per tier — one clear recommendation per hardware class.
+            assert_eq!(
+                tiers.iter().filter(|&&x| x == t).count(),
+                1,
+                "tier {t} should have exactly one entry"
+            );
         }
-        // quality and pro each have two model options (Qwen3 default + Gemma alternative)
-        assert_eq!(tiers.iter().filter(|&&t| t == "quality").count(), 2);
-        assert_eq!(tiers.iter().filter(|&&t| t == "pro").count(), 2);
+    }
+
+    #[test]
+    fn catalog_is_base_models_only() {
+        for e in ModelCatalog::entries() {
+            // Base-continuation everywhere: instruct models reply to context and leak
+            // chat scaffolding, so none may appear in the shipped catalog.
+            assert_eq!(e.model_kind, ModelKind::Base, "{} is not a base model", e.id);
+            // The runtime detects the inference path from the installed filename
+            // ({id}.gguf), so no id may carry an instruct marker.
+            let id = e.id.to_lowercase();
+            for marker in ["-it", "instruct", "smollm", "-chat"] {
+                assert!(!id.contains(marker), "{} id contains instruct marker {marker}", e.id);
+            }
+        }
     }
 
     #[test]

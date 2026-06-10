@@ -35,7 +35,7 @@ final class AXMonitor: @unchecked Sendable {
     private var currentPollInterval: TimeInterval = 0.08
     private var unchangedPollCount: Int = 0
 
-    // Debounce for Apple Intelligence completions (mirrors the 75 ms Rust debounce).
+    // Debounce for Apple Intelligence completions (mirrors the 20 ms Rust debounce).
     private var aiDebounceWork: DispatchWorkItem?
 
     // Rolling average of single-character AX frame widths — used for post-accept
@@ -88,6 +88,19 @@ final class AXMonitor: @unchecked Sendable {
         pollTimer = nil
         tearDownAXObserver()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    /// Hide the on-screen affordances (ghost-text overlay + field-edge "active" marker)
+    /// without touching poll bookkeeping (lastPrefix / lastBundleId). Called from the
+    /// "focus is no longer on a text field" early-returns in poll() so the indicator
+    /// doesn't stay stuck on the old field when the user clicks another window or a
+    /// non-text region of the same app. UI-only, so it's safe even when a transient
+    /// helper process briefly owns the frontmost slot — the next real poll re-shows it.
+    private func hideAffordances() {
+        DispatchQueue.main.async {
+            OverlayWindow.shared.hide()
+            FieldEdgeIndicator.shared.hide()
+        }
     }
 
     // ── AXObserver lifecycle ──────────────────────────────────────────────────
@@ -153,7 +166,10 @@ final class AXMonitor: @unchecked Sendable {
         let result = AXUIElementCopyAttributeValue(
             appRef, kAXFocusedUIElementAttribute as CFString, &focusedElement
         )
-        guard result == .success, let element = focusedElement else { return }
+        // No focused element in the (non-self) frontmost app: focus left any text
+        // field — e.g. user clicked the desktop or a window with nothing editable
+        // focused. Clear the stale indicator instead of leaving it pinned.
+        guard result == .success, let element = focusedElement else { hideAffordances(); return }
         let axElement = element as! AXUIElement
 
         // Register AXObserver when the app changes — ensures immediate notification
@@ -167,11 +183,13 @@ final class AXMonitor: @unchecked Sendable {
             isSecure = (secureValue as? Bool) ?? false
         }
 
-        // Get the full text value
+        // Get the full text value. A focused element that exposes no string value is
+        // not a text field (button, list row, web link, etc.) — the user moved focus
+        // off the field within the same app, so hide the stale indicator/overlay.
         var textValue: AnyObject?
         guard AXUIElementCopyAttributeValue(axElement, kAXValueAttribute as CFString, &textValue) == .success,
               let fullText = textValue as? String
-        else { return }
+        else { hideAffordances(); return }
 
         // Get the selected range to find caret position
         var rangeValue: AnyObject?
@@ -389,7 +407,7 @@ final class AXMonitor: @unchecked Sendable {
                     self.aiDebounceWork = nil
                 }
                 aiDebounceWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.075, execute: work)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
                 return
             }
         }

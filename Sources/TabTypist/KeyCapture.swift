@@ -282,7 +282,7 @@ final class KeyCapture: @unchecked Sendable {
         cmdVInsert(text)
     }
 
-    /// Attempt insertion via AX value write. Returns false if the app rejects it.
+    /// Attempt insertion via AX. Returns false if the app rejects it.
     @discardableResult
     private func tryAXInsert(_ text: String) -> Bool {
         let systemWide = AXUIElementCreateSystemWide()
@@ -293,6 +293,19 @@ final class KeyCapture: @unchecked Sendable {
 
         let element = focusedRef as! AXUIElement  // safe: AX always returns AXUIElement here
 
+        // Preferred: insert at the caret by replacing the (empty) selection. This is a
+        // localized edit, so rich-text engines like Notes' NSTextView keep their
+        // formatting AND don't re-run a document-wide "Capitalize Words" substitution
+        // on the surrounding text. The whole-value rewrite below was handing Notes a
+        // brand-new document string, which made it Title-Case every accepted word.
+        if AXUIElementSetAttributeValue(
+            element, kAXSelectedTextAttribute as CFString, text as CFString
+        ) == .success {
+            return true
+        }
+
+        // Fallback: whole-value rewrite for fields that don't accept AXSelectedText
+        // writes (some custom/web text fields). Caret is recomputed from the selection.
         var valueRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             element, kAXValueAttribute as CFString, &valueRef

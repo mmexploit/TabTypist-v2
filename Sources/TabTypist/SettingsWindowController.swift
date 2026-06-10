@@ -10,23 +10,28 @@ final class SettingsWindowController: NSObject {
 
     func show() {
         if let w = window, w.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
             w.makeKeyAndOrderFront(nil)
             return
         }
 
-        let view = SettingsView()
-        let hosting = NSHostingView(rootView: view)
-        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 760)
+        let hosting = NSHostingView(rootView: SettingsView())
+        hosting.autoresizingMask = [.width, .height]
 
+        // Resizable with a sensible minimum so content scrolls instead of clipping on
+        // short displays — the previous fixed 760pt height cut off lower sections.
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 720),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         w.title = "TabTypist Settings"
+        w.contentMinSize = NSSize(width: 500, height: 480)
+        hosting.frame = w.contentLayoutRect
         w.contentView = hosting
         w.center()
+        NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
         window = w
     }
@@ -54,6 +59,23 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                HStack(spacing: 12) {
+                    Image(systemName: "t.square.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("TabTypist")
+                            .font(.title3.weight(.semibold))
+                        Text("Inline AI autocomplete, on-device.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+            }
+
             Section("Permissions") {
                 permissionRow(
                     name: "Accessibility", granted: axGranted,
@@ -100,6 +122,8 @@ struct SettingsView: View {
             Section("Personalization") {
                 LabeledContent("Your name") {
                     TextField("Used in suggestions", text: $userName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 220)
                         .onSubmit { sendUserName() }
                 }
                 Text("Shown to the model as context for more relevant suggestions.")
@@ -108,19 +132,24 @@ struct SettingsView: View {
             }
 
             Section("Writing Style") {
-                Text("Global rules")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $customRulesGlobal)
-                    .font(.body)
-                    .frame(height: 72)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
-                    .onChange(of: customRulesGlobal) { _, newValue in
-                        sendCustomRulesGlobal(newValue)
-                    }
-                Text("Applied to all apps. Example: use formal tone, prefer short sentences, write in British English.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Global rules")
+                        .font(.subheadline.weight(.medium))
+                    TextEditor(text: $customRulesGlobal)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                        .frame(height: 80)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
+                        .onChange(of: customRulesGlobal) { _, newValue in
+                            sendCustomRulesGlobal(newValue)
+                        }
+                    Text("Applied to all apps. Example: use formal tone, prefer short sentences, write in British English.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("Context") {
@@ -137,44 +166,45 @@ struct SettingsView: View {
             }
 
             Section("Model") {
-                Button("Change model…") {
-                    OnboardingController.shared.showIfNeeded()
+                LabeledContent("Active model") {
+                    Button("Change model…") {
+                        OnboardingController.shared.showIfNeeded()
+                    }
                 }
-
-                Divider()
 
                 LabeledContent("HuggingFace token") {
                     SecureField("hf_...", text: $hfToken)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 220)
                         .onSubmit { sendHfToken() }
                 }
                 Text("Required for all model downloads. Get yours at huggingface.co/settings/tokens (read-only token is enough).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Divider()
-
-                LabeledContent("Custom GGUF") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Custom GGUF")
+                        .font(.subheadline.weight(.medium))
                     TextField("HuggingFace GGUF URL", text: $customModelUrl)
-                }
-                HStack {
-                    Spacer()
-                    Button(downloadingCustom ? "Downloading…" : "Download custom model") {
-                        downloadCustomModel()
+                        .textFieldStyle(.roundedBorder)
+                    HStack {
+                        Text("Signature verification is skipped for custom models.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(downloadingCustom ? "Downloading…" : "Download") {
+                            downloadCustomModel()
+                        }
+                        .disabled(customModelUrl.isEmpty || downloadingCustom)
                     }
-                    .disabled(customModelUrl.isEmpty || downloadingCustom)
                 }
-                Text("Enter a direct URL to a GGUF file from HuggingFace. Signature verification is skipped for custom models.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("Data") {
-                Button("Reset TabTypist…") { showResetConfirm = true }
-                    .foregroundStyle(.red)
+                Button("Reset TabTypist…", role: .destructive) { showResetConfirm = true }
             }
         }
         .formStyle(.grouped)
-        .padding()
         .confirmationDialog(
             "This removes all models, settings, and stored data.",
             isPresented: $showResetConfirm,
