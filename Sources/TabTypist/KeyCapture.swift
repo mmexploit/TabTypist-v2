@@ -196,9 +196,9 @@ final class KeyCapture: @unchecked Sendable {
         case Int64(kVK_Tab):
             if completionIsVisible {
                 let (word, rest) = nextWord(from: pendingCompletionText)
-                // Do NOT post Cmd+V from inside the tap callback — posting re-enters
-                // our tap and events are often dropped. Return nil to consume the Tab;
-                // the paste runs on the main run loop where it is reliable.
+                // Do NOT post synthetic key events from inside the tap callback —
+                // posting re-enters our tap and events are often dropped. Return nil to
+                // consume the Tab; the insertion runs on the main run loop instead.
                 if rest.isEmpty {
                     // Last (or only) word — full acceptance.
                     clearCompletion()
@@ -254,7 +254,9 @@ final class KeyCapture: @unchecked Sendable {
 
     // ── Text injection ────────────────────────────────────────────────────────
 
-    private enum InjectionMethod: String { case ax, cmdV }
+    // Raw value "cmdV" is historical (the synthetic path used to paste) and is kept so
+    // caches persisted in UserDefaults under the old name remain valid.
+    private enum InjectionMethod: String { case ax, synthetic = "cmdV" }
 
     private func cachedInjectionMethod(bundleId: String) -> InjectionMethod? {
         guard let raw = UserDefaults.standard.string(forKey: "injectionMethod.\(bundleId)") else { return nil }
@@ -272,7 +274,7 @@ final class KeyCapture: @unchecked Sendable {
         let bundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
         let cached = cachedInjectionMethod(bundleId: bundleId)
 
-        if cached != .cmdV {
+        if cached != .synthetic {
             if tryAXInsert(text) {
                 if cached == nil { cacheInjectionMethod(.ax, bundleId: bundleId) }
                 return
@@ -283,8 +285,8 @@ final class KeyCapture: @unchecked Sendable {
             }
         }
 
-        cacheInjectionMethod(.cmdV, bundleId: bundleId)
-        cmdVInsert(text)
+        cacheInjectionMethod(.synthetic, bundleId: bundleId)
+        typeTextInsert(text)
     }
 
     /// Attempt insertion via AX. Returns false if the app rejects it.
@@ -302,7 +304,7 @@ final class KeyCapture: @unchecked Sendable {
         // nodes): AX text writes return .success WITHOUT mutating the DOM. That false
         // success used to get cached as "ax works here", making Tab consume the
         // keystroke while inserting nothing (Slack, Discord, in-browser editors).
-        // Paste is the only reliable injection for web content.
+        // Synthetic typing is the only reliable injection for web content.
         if Self.isWebContent(element) { return false }
 
         // Preferred: insert at the caret by replacing the (empty) selection. This is a
@@ -372,7 +374,7 @@ final class KeyCapture: @unchecked Sendable {
     /// caret must now end with the inserted string. Native AX writes apply
     /// synchronously, so an immediate read-back is reliable. Fields that expose no
     /// readable value can't be disproven — trust the .success there rather than
-    /// risking a double insert via the paste fallback.
+    /// risking a double insert via the synthetic-typing fallback.
     private static func insertionLanded(_ element: AXUIElement, inserted: String) -> Bool {
         var valueRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
@@ -389,27 +391,29 @@ final class KeyCapture: @unchecked Sendable {
         return ns.substring(to: caret).hasSuffix(inserted)
     }
 
-    /// Paste via Cmd+V. Restores the previous pasteboard content after 150 ms.
-    private func cmdVInsert(_ text: String) {
-        let pb = NSPasteboard.general
-        let prev = pb.string(forType: .string)
-
-        pb.clearContents()
-        pb.setString(text, forType: .string)
-
+    /// Insert text by synthesizing keyboard events that carry a unicode payload.
+    /// This replaced the old Cmd+V paste injection: paste runs through the target
+    /// app's clipboard normalization — Slack's composer trims leading/trailing
+    /// whitespace from pasted text, which welded word-by-word accepts together
+    /// ("check it" + "out " → "check itout") — and it clobbered the user's
+    /// clipboard with a racy save/restore. Unicode key events take the app's
+    /// ordinary typing path instead: whitespace survives verbatim, the pasteboard
+    /// is never touched, and every field that accepts typing accepts this.
+    /// CGEvent's unicode payload caps at 20 UTF-16 units per event, so chunk.
+    private func typeTextInsert(_ text: String) {
         let src = CGEventSource(stateID: .hidSystemState)
-        let vDown = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: true)   // V
-        let vUp   = CGEvent(keyboardEventSource: src, virtualKey: 0x09, keyDown: false)
-        vDown?.flags = .maskCommand
-        vUp?.flags   = .maskCommand
-        vDown?.post(tap: .cghidEventTap)
-        vUp?.post(tap: .cghidEventTap)
-
-        // Electron apps handle the synthetic Cmd+V asynchronously (renderer IPC), so a
-        // 150 ms restore could race the paste and re-insert the OLD clipboard content.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            pb.clearContents()
-            if let prev { pb.setString(prev, forType: .string) }
+        let units = Array(text.utf16)
+        var i = 0
+        while i < units.count {
+            var chunk = Array(units[i..<min(i + 20, units.count)])
+            if let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
+                down.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
+                down.post(tap: .cghidEventTap)
+            }
+            if let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false) {
+                up.post(tap: .cghidEventTap)
+            }
+            i += 20
         }
     }
 }

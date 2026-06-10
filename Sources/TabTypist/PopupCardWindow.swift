@@ -9,6 +9,7 @@ final class PopupCardWindow: NSPanel {
     static let shared = PopupCardWindow()
 
     private let label: NSTextField
+    private let card = NSView()
 
     private init() {
         label = NSTextField(labelWithString: "")
@@ -30,11 +31,18 @@ final class PopupCardWindow: NSPanel {
 
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 1)
         isOpaque = false
-        backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92)
+        // Ghost-text styling: the window itself is clear; a rounded, low-contrast
+        // card view holds the label so the fallback reads as floating ghost text,
+        // not a hard-edged box stamped over the host app's UI.
+        backgroundColor = .clear
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         ignoresMouseEvents = true
-        hasShadow = true
-        contentView = label
+        hasShadow = false
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 8
+        card.layer?.masksToBounds = true
+        card.addSubview(label)
+        contentView = card
     }
 
     /// Known-unreliable bundle IDs that trigger popup mode automatically. Browsers
@@ -66,10 +74,17 @@ final class PopupCardWindow: NSPanel {
         let pinned = UserDefaults.standard.string(forKey: "overlayMode.\(bundleId)")
         if pinned == "popup" { return true }
         if pinned == "inline" { return false }
-        if caretHeight == 0 { return true }
-        if caretHeight > 60 { return true }
+        if caretHeight == 0 {
+            fputs("PopupCard: popup mode (no caret bounds) bundle=\(bundleId)\n", stderr)
+            return true
+        }
+        if caretHeight > 60 {
+            fputs("PopupCard: popup mode (caret height \(caretHeight)) bundle=\(bundleId)\n", stderr)
+            return true
+        }
         if let p = caretPoint, let f = inputFrame, f.height > 0,
            !f.insetBy(dx: -8, dy: -8).contains(p) {
+            fputs("PopupCard: popup mode (caret \(p) outside field \(f)) bundle=\(bundleId)\n", stderr)
             return true
         }
         return unreliableBundles.contains(bundleId)
@@ -110,7 +125,12 @@ final class PopupCardWindow: NSPanel {
         }
 
         setFrame(NSRect(x: fx, y: fy, width: cardW, height: cardH), display: true)
-        contentView?.frame = NSRect(origin: .zero, size: frame.size)
+        card.frame = NSRect(origin: .zero, size: frame.size)
+        // Resolve the backdrop color each show so light/dark appearance changes stick
+        // (layer colors don't track appearance automatically).
+        card.layer?.backgroundColor =
+            NSColor.windowBackgroundColor.withAlphaComponent(0.85).cgColor
+        label.frame = card.bounds.insetBy(dx: cardPadding, dy: cardPadding)
         alphaValue = 1
         orderFront(nil)
     }

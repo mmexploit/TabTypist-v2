@@ -158,6 +158,17 @@ final class AXMonitor: @unchecked Sendable {
         guard AXObserverCreate(pid, callback, &obs) == .success, let obs else { return }
 
         let appElement = AXUIElementCreateApplication(pid)
+
+        // Electron gates its full accessibility tree behind this app-level attribute:
+        // until an assistive client sets it (or VoiceOver is detected), apps like Slack
+        // expose only a minimal tree where caret bounds queries fail and we're forced
+        // into popup-card mode. Setting it is the documented Electron handshake; every
+        // non-Electron app just returns .attributeUnsupported, so it's safe to send
+        // unconditionally on each app switch.
+        AXUIElementSetAttributeValue(
+            appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue
+        )
+
         AXObserverAddNotification(obs, appElement, kAXValueChangedNotification as CFString, selfPtr)
         AXObserverAddNotification(obs, appElement, kAXSelectedTextChangedNotification as CFString, selfPtr)
         AXObserverAddNotification(obs, appElement, kAXFocusedUIElementChangedNotification as CFString, selfPtr)
@@ -279,6 +290,16 @@ final class AXMonitor: @unchecked Sendable {
                 )
             }
             if let bv { AXValueGetValue(bv as! AXValue, .cgRect, &caretRect) }
+            useCharOffset = 0
+        }
+
+        // Chromium/Electron fallback (Slack, Discord, web composers): these often fail
+        // both index-based bounds queries above but speak WebKit's text-marker dialect —
+        // the screen bounds of the (collapsed) selection marker range IS the caret rect.
+        // Without this, Slack always lands in popup-card mode instead of inline ghost
+        // text at the caret.
+        if caretRect.height == 0, let webRect = AXMonitor.textMarkerCaretRect(for: axElement) {
+            caretRect = webRect
             useCharOffset = 0
         }
 
@@ -530,6 +551,39 @@ final class AXMonitor: @unchecked Sendable {
             let v = chars[idx].value
             if v != 0x0A && v != 0x0D { return idx }
             idx -= 1
+        }
+        return nil
+    }
+
+    /// Caret rect via the WebKit text-marker AX dialect, which Chromium (and therefore
+    /// Electron apps like Slack) implements where the index-based bounds-for-range
+    /// queries fail or return zero rects. A collapsed selection's marker-range bounds
+    /// is the caret. The attributes may live on the focused node or only on an
+    /// ancestor (web area), so walk up a few parents. Returns nil when the dialect is
+    /// unsupported or the rect is degenerate — callers keep their popup fallback.
+    static func textMarkerCaretRect(for element: AXUIElement) -> CGRect? {
+        var node = element
+        for _ in 0..<4 {
+            var markerRange: AnyObject?
+            if AXUIElementCopyAttributeValue(
+                node, "AXSelectedTextMarkerRange" as CFString, &markerRange
+            ) == .success, let range = markerRange {
+                var boundsVal: AnyObject?
+                if AXUIElementCopyParameterizedAttributeValue(
+                    node, "AXBoundsForTextMarkerRange" as CFString, range, &boundsVal
+                ) == .success, let bv = boundsVal, CFGetTypeID(bv) == AXValueGetTypeID() {
+                    var rect = CGRect.zero
+                    if AXValueGetValue(bv as! AXValue, .cgRect, &rect),
+                       rect.height > 0, rect.height < 200 {
+                        return rect
+                    }
+                }
+            }
+            var parent: AnyObject?
+            guard AXUIElementCopyAttributeValue(
+                node, kAXParentAttribute as CFString, &parent
+            ) == .success, let p = parent else { return nil }
+            node = p as! AXUIElement
         }
         return nil
     }
