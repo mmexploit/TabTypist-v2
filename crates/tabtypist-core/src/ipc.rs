@@ -23,6 +23,7 @@ pub struct RpcError {
 }
 
 impl RpcMessage {
+    #[allow(dead_code)]
     pub fn request(id: u64, method: impl Into<String>, params: Value) -> Self {
         Self {
             id: Some(id),
@@ -58,6 +59,7 @@ impl RpcMessage {
 
 pub struct IpcTransport {
     writer: Box<dyn AsyncWrite + Unpin + Send>,
+    #[allow(dead_code)]
     next_id: u64,
 }
 

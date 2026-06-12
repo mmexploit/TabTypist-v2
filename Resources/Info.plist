@@ -12,7 +12,7 @@
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>0.1.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
@@ -28,7 +28,7 @@
     <key>NSInputMonitoringUsageDescription</key>
     <string>TabTypist captures the Tab key to let you accept completions, and Escape to dismiss them. Tab passes through normally when no completion is showing.</string>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2024 TabTypist. Functional Source License 1.1.</string>
+    <string>Copyright © 2026 TabTypist. Functional Source License 1.1.</string>
     <key>SUPublicEDKey</key>
     <string>PLACEHOLDER_SPARKLE_PUBLIC_KEY</string>
     <key>SUFeedURL</key>

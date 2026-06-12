@@ -1,9 +1,10 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
+// Endpoint and flush are wired up in Phase 3; kept here to avoid losing the implementation.
+#[allow(dead_code)]
 const TELEMETRY_ENDPOINT: &str = "https://telemetry.tabtypist.com/v1/events";
 
 // ── Event types ───────────────────────────────────────────────────────────────
@@ -28,8 +29,10 @@ pub enum TelemetryEvent {
     },
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 struct Batch {
+    #[allow(dead_code)]
     install_id: String,
     events: Vec<TelemetryEvent>,
 }
@@ -70,6 +73,7 @@ impl TelemetryClient {
     }
 
     /// Flush the queue to the endpoint.  No-op if consent is false.
+    #[allow(dead_code)]
     pub async fn flush(&self) -> Result<()> {
         if !*self.consent.lock().unwrap() {
             return Ok(());

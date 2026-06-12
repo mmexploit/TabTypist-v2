@@ -140,6 +140,7 @@ impl ModelCatalog {
 
     /// Return the recommended tier for the given physical RAM.
     /// Never auto-selects upward: stays at "quality" or below even on 32 GB Macs.
+    #[allow(dead_code)]
     pub fn recommended_for_ram_gb(ram_gb: u32) -> Option<ModelEntry> {
         let target_tier = if ram_gb >= 24 {
             "pro"
@@ -163,7 +164,9 @@ pub enum DownloadProgress {
     Starting { total_bytes: u64 },
     Progress { downloaded: u64, total: u64 },
     Verifying,
+    #[allow(dead_code)]
     Complete { path: PathBuf },
+    #[allow(dead_code)]
     Failed { error: String },
 }
 
@@ -243,7 +246,6 @@ impl ModelDownloader {
 
         let mut downloaded = already_have;
         let mut body = response.bytes_stream();
-        use tokio_util::io::StreamReader;
         use futures_util::StreamExt;
 
         while let Some(chunk) = body.next().await {
@@ -302,7 +304,6 @@ impl ModelDownloader {
             warn!("skipping signature verification (placeholder sig)");
             return Ok(());
         }
-        use base64::{engine::general_purpose::STANDARD, Engine};
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
         let sig_bytes = hex::decode(sig_hex).context("decoding signature hex")?;

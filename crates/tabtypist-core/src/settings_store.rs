@@ -137,6 +137,7 @@ pub struct SettingsStore {
     inner: Arc<RwLock<Settings>>,
     path: PathBuf,
     tx: watch::Sender<Settings>,
+    #[allow(dead_code)]
     pub rx: watch::Receiver<Settings>,
 }
 
@@ -197,15 +198,18 @@ impl SettingsStore {
     }
 
     /// Reset to factory defaults (used by uninstall hygiene and the "Reset TabTypist" action).
+    #[allow(dead_code)]
     pub fn reset(&self) -> Result<()> {
         self.update(|s| *s = Settings::default())
     }
 
     /// Generate a new install ID (privacy: the user can reset telemetry identity).
+    #[allow(dead_code)]
     pub fn reset_install_id(&self) -> Result<()> {
         self.update(|s| s.install_id = new_install_id())
     }
 
+    #[allow(dead_code)]
     pub fn watch(&self) -> watch::Receiver<Settings> {
         self.rx.clone()
     }

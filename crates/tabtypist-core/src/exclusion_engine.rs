@@ -108,6 +108,7 @@ impl ExclusionEngine {
     }
 
     /// Replace the config with a freshly-fetched (and verified) remote config.
+    #[allow(dead_code)]
     pub fn update_config(&mut self, config: ExclusionConfig) {
         self.config = config;
     }
@@ -176,6 +177,7 @@ pub fn is_terminal_bundle(bundle_id: &str) -> bool {
 
 // ── Remote config verification ────────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SignedExclusionConfig {
     /// Base64-encoded JSON of ExclusionConfig
@@ -185,6 +187,7 @@ pub struct SignedExclusionConfig {
 }
 
 /// Verify and decode a remote exclusion config bundle.
+#[allow(dead_code)]
 pub fn verify_and_decode(
     bundle: &SignedExclusionConfig,
     public_key_bytes: &[u8; 32],

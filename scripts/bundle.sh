@@ -34,6 +34,7 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 cp "${SWIFT_BUILD_DIR}/TabTypist" "${APP_DIR}/Contents/MacOS/TabTypist"
 cp "${RUST_BUILD_DIR}/tabtypist-core" "${APP_DIR}/Contents/Resources/tabtypist-core"
 cp "Resources/ed25519_pubkey.bin" "${APP_DIR}/Contents/Resources/ed25519_pubkey.bin"
+cp "Resources/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
 cp "Resources/Info.plist" "${APP_DIR}/Contents/Info.plist"
 
 # Codesign. Prefer a STABLE self-signed identity ("TabTypist Dev", created by

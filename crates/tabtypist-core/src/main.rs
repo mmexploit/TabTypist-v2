@@ -7,7 +7,7 @@ mod settings_store;
 mod telemetry;
 mod vocab_store;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use exclusion_engine::ExclusionEngine;
 use ipc::{IpcTransport, RpcMessage};
 use language_router::LanguageRouter;

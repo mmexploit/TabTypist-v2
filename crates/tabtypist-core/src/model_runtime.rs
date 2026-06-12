@@ -8,6 +8,7 @@ use std::sync::{mpsc, Arc};
 
 /// A loaded model that can produce completions.
 pub trait Completer: Send + Sync {
+    #[allow(dead_code)]
     fn complete(&self, prefix: &str, suffix: &str, max_tokens: u32) -> Result<String> {
         self.complete_ext(prefix, suffix, max_tokens, false)
     }
@@ -48,6 +49,7 @@ pub trait Completer: Send + Sync {
 /// Optional context injected into instruct prompts (priority order from ADR 0006).
 #[derive(Debug, Default, Clone)]
 pub struct InstrContext {
+    #[allow(dead_code)]
     pub length_instruction: String,
     pub visual_context: String,    // OCR text from screen above the field
     pub clipboard_context: String, // opt-in clipboard text
