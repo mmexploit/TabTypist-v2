@@ -26,7 +26,8 @@ final class MenuBarController: NSObject {
     }
 
     func modelLoaded(tier: String, displayName: String) {
-        loadedModelLabel = "\(tier) — \(displayName)"
+        let branded = ModelTierInfo.brandedName(for: tier)
+        loadedModelLabel = branded
     }
 
     private func updateIcon() {
@@ -48,7 +49,7 @@ extension MenuBarController: NSMenuDelegate {
         modelItem.isEnabled = false
         menu.addItem(modelItem)
 
-        let changeModelItem = NSMenuItem(title: "Change model…", action: #selector(openSettings), keyEquivalent: "")
+        let changeModelItem = NSMenuItem(title: "Change model…", action: #selector(openModelPicker), keyEquivalent: "")
         changeModelItem.target = self
         menu.addItem(changeModelItem)
         menu.addItem(.separator())
@@ -76,6 +77,12 @@ extension MenuBarController: NSMenuDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updatesItem.target = self
+        menu.addItem(updatesItem)
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit TabTypist", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
     }
@@ -94,7 +101,15 @@ extension MenuBarController: NSMenuDelegate {
         }
     }
 
+    @objc private func openModelPicker() {
+        ModelPickerController.shared.show()
+    }
+
     @objc private func openSettings() {
         SettingsWindowController.shared.show()
+    }
+
+    @objc private func checkForUpdates() {
+        NotificationCenter.default.post(name: .checkForUpdatesRequested, object: nil)
     }
 }

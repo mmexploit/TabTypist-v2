@@ -17,14 +17,19 @@ struct ModelTierInfo: Identifiable {
 
     // Base checkpoints only — instruct models reply to context and leak chat
     // scaffolding into ghost text, so every tier now uses the base-continuation path.
+    // displayName is the user-facing branded name; the raw model family stays in `id`.
     static let catalog: [ModelTierInfo] = [
-        ModelTierInfo(id: "qwen3-0.6b-base-q4km",  tier: "nano",        displayName: "Qwen3 0.6B Base",   sizeGB: 0.40, minRAMGB: 0,  isInstruct: false),
-        ModelTierInfo(id: "qwen35-0.8b-base-q6k",  tier: "mini",        displayName: "Qwen3.5 0.8B Base", sizeGB: 0.63, minRAMGB: 8,  isInstruct: false),
-        ModelTierInfo(id: "qwen35-2b-base-q4km",   tier: "standard",    displayName: "Qwen3.5 2B Base",   sizeGB: 1.27, minRAMGB: 8,  isInstruct: false),
-        ModelTierInfo(id: "qwen3-4b-base-q4km",    tier: "performance", displayName: "Qwen3 4B Base",     sizeGB: 2.50, minRAMGB: 16, isInstruct: false),
-        ModelTierInfo(id: "gemma4-e2b-base-q6k",   tier: "quality",     displayName: "Gemma 4 E2B Base",  sizeGB: 3.85, minRAMGB: 16, isInstruct: false),
-        ModelTierInfo(id: "gemma4-e4b-base-q4km",  tier: "pro",         displayName: "Gemma 4 E4B Base",  sizeGB: 5.34, minRAMGB: 24, isInstruct: false),
+        ModelTierInfo(id: "qwen3-0.6b-base-q4km",  tier: "nano",        displayName: "Nano",        sizeGB: 0.40, minRAMGB: 0,  isInstruct: false),
+        ModelTierInfo(id: "qwen35-0.8b-base-q6k",  tier: "mini",        displayName: "Mini",        sizeGB: 0.63, minRAMGB: 8,  isInstruct: false),
+        ModelTierInfo(id: "qwen35-2b-base-q4km",   tier: "standard",    displayName: "Standard",    sizeGB: 1.27, minRAMGB: 8,  isInstruct: false),
+        ModelTierInfo(id: "qwen3-4b-base-q4km",    tier: "performance", displayName: "Performance", sizeGB: 2.50, minRAMGB: 16, isInstruct: false),
+        ModelTierInfo(id: "gemma4-e2b-base-q6k",   tier: "quality",     displayName: "Quality",     sizeGB: 3.85, minRAMGB: 16, isInstruct: false),
+        ModelTierInfo(id: "gemma4-e4b-base-q4km",  tier: "pro",         displayName: "Pro",         sizeGB: 5.34, minRAMGB: 24, isInstruct: false),
     ]
+
+    static func brandedName(for tier: String) -> String {
+        catalog.first(where: { $0.tier == tier })?.displayName ?? tier.capitalized
+    }
 
     var sizeLabel: String { String(format: "%.1f GB", sizeGB) }
     var ramLabel: String  { minRAMGB == 0 ? "Any Mac" : "\(minRAMGB) GB+ RAM" }
@@ -118,6 +123,44 @@ final class OnboardingController {
             defer: false
         )
         w.title = "Welcome to TabTypist"
+        w.contentView = hosting
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        w.isReleasedWhenClosed = false
+        window = w
+        hostingView = hosting
+    }
+
+    func dismiss() {
+        window?.close()
+        window = nil
+        hostingView = nil
+    }
+}
+
+// ── Model picker (standalone — skips welcome / permissions / intro) ───────────
+
+final class ModelPickerController {
+    static let shared = ModelPickerController()
+
+    private var window: NSWindow?
+    private var hostingView: NSHostingView<ModelPickerView>?
+
+    func show() {
+        if let w = window, w.isVisible { w.makeKeyAndOrderFront(nil); return }
+
+        let state = OnboardingState()
+        let view = ModelPickerView(state: state) { [weak self] in self?.dismiss() }
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(x: 0, y: 0, width: 560, height: 440)
+
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        w.title = "Change Model"
         w.contentView = hosting
         w.center()
         w.makeKeyAndOrderFront(nil)
@@ -371,7 +414,7 @@ struct LanguageSelectStep: View {
             VStack(spacing: 12) {
                 LanguageRow(
                     name: "English",
-                    modelInfo: "Qwen 2.5 1.5B · ~900 MB",
+                    modelInfo: "Standard tier · ~1.3 GB",
                     flag: "🇬🇧",
                     isSelected: state.selectedLanguages.contains("en")
                 ) {
@@ -769,7 +812,6 @@ struct TierRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(tier.displayName).font(.body.weight(.medium))
-                        Text("(\(tier.tier))").font(.caption).foregroundStyle(.secondary)
                         if isRecommended {
                             Text("Recommended")
                                 .font(.caption2.weight(.semibold))
@@ -840,6 +882,234 @@ struct KeyHint: View {
                 .padding(.vertical, 7)
                 .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
             Text(label).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+// ── Model picker view (used by ModelPickerController) ─────────────────────────
+
+struct ModelPickerView: View {
+    @ObservedObject var state: OnboardingState
+    let onDismiss: () -> Void
+
+    private let ramGB = detectPhysicalRAMGB()
+    private var recommendedId: String {
+        let tier = recommendedTier(ramGB: ramGB)
+        return ModelTierInfo.catalog.first(where: { $0.tier == tier })?.id ?? "qwen35-2b-base-q4km"
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                if state.downloadPhase == .idle {
+                    pickerBody
+                } else {
+                    progressBody
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+
+            HStack {
+                if state.downloadPhase != .complete {
+                    Button("Cancel") { onDismiss() }
+                }
+                Spacer()
+                actionButton
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+        }
+        .frame(width: 560, height: 440)
+        .onChange(of: state.downloadPhase) { _, phase in
+            if case .complete = phase {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { onDismiss() }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .downloadProgressUpdated)) { note in
+            handleProgressNote(note)
+        }
+    }
+
+    private var pickerBody: some View {
+        VStack(spacing: 16) {
+            Text("Choose Your Model")
+                .font(.title2.bold())
+            Text("Your Mac has \(ramGB) GB RAM. Recommended tier is highlighted.")
+                .foregroundStyle(.secondary)
+                .font(.callout)
+                .multilineTextAlignment(.center)
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(ModelTierInfo.catalog) { tier in
+                        TierRow(
+                            tier: tier,
+                            isSelected: state.selectedTierId == tier.id,
+                            isRecommended: tier.id == recommendedId
+                        ) {
+                            state.selectedTierId = tier.id
+                        }
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            .frame(maxHeight: 300)
+        }
+        .padding(.horizontal, 32)
+        .padding(.top, 24)
+    }
+
+    private var progressBody: some View {
+        VStack(spacing: 24) {
+            downloadIcon.animation(.spring, value: progressIconName)
+            VStack(spacing: 8) {
+                Text(progressTitle).font(.title2.bold())
+                let tierName = ModelTierInfo.catalog.first(where: { $0.id == state.selectedTierId })
+                    .map { "\($0.displayName) · \($0.sizeLabel)" } ?? ""
+                Text("\(tierName)\nRuns entirely on your Mac.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 400)
+            }
+            progressIndicator
+        }
+        .padding(.horizontal, 40)
+        .padding(.vertical, 32)
+    }
+
+    private var progressIconName: String {
+        switch state.downloadPhase {
+        case .complete: return "checkmark.circle.fill"
+        case .failed:   return "xmark.circle.fill"
+        default:        return "arrow.down.circle.fill"
+        }
+    }
+
+    private var progressTitle: String {
+        switch state.downloadPhase {
+        case .downloading: return "Downloading…"
+        case .verifying:   return "Verifying…"
+        case .complete:    return "Model Ready"
+        case .failed:      return "Download Failed"
+        default:           return ""
+        }
+    }
+
+    @ViewBuilder
+    private var downloadIcon: some View {
+        ZStack {
+            if case .downloading = state.downloadPhase {
+                Circle()
+                    .stroke(Color.accentColor.opacity(0.15), lineWidth: 4)
+                    .frame(width: 80, height: 80)
+                Circle()
+                    .trim(from: 0, to: state.downloadFraction)
+                    .stroke(Color.accentColor as Color, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 80, height: 80)
+                    .animation(.linear(duration: 0.3), value: state.downloadFraction)
+            }
+            let iconColor: Color = {
+                switch state.downloadPhase {
+                case .complete: return .green
+                case .failed:   return .red
+                default:        return .blue
+                }
+            }()
+            Image(systemName: progressIconName)
+                .font(.system(size: 52))
+                .foregroundStyle(iconColor)
+        }
+        .frame(width: 80, height: 80)
+    }
+
+    @ViewBuilder
+    private var progressIndicator: some View {
+        switch state.downloadPhase {
+        case .downloading:
+            VStack(spacing: 10) {
+                ProgressView(value: state.downloadFraction)
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 360)
+                    .tint(.accentColor)
+                HStack {
+                    Text(state.downloadLabel).font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(Int(state.downloadFraction * 100))%")
+                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: 360)
+            }
+        case .verifying:
+            HStack(spacing: 10) {
+                ProgressView().scaleEffect(0.8)
+                Text("Verifying checksum and signature…").foregroundStyle(.secondary)
+            }
+        case .complete:
+            Label("Model verified and ready", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green).font(.callout.weight(.medium))
+        case .failed(let msg):
+            VStack(spacing: 6) {
+                Label("Download failed", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(msg).font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).frame(maxWidth: 360)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        switch state.downloadPhase {
+        case .idle:
+            Button("Switch Model") { startDownload() }
+                .buttonStyle(.borderedProminent)
+        case .downloading, .verifying:
+            Button("Downloading…") {}
+                .buttonStyle(.borderedProminent)
+                .disabled(true)
+        case .complete:
+            Button("Done") { onDismiss() }
+                .buttonStyle(.borderedProminent)
+        case .failed:
+            Button("Retry") { startDownload() }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func startDownload() {
+        state.downloadPhase = .downloading
+        IPCBridge.shared.notify(method: "startModelDownload", params: [
+            "language": "en",
+            "modelId": state.selectedTierId,
+        ])
+    }
+
+    private func handleProgressNote(_ note: Notification) {
+        guard let info = note.userInfo else { return }
+        if let phase = info["phase"] as? String {
+            switch phase {
+            case "verifying": state.downloadPhase = .verifying
+            case "complete":  state.downloadPhase = .complete
+            case "failed":
+                state.downloadPhase = .failed(info["error"] as? String ?? "Unknown error")
+            default: break
+            }
+            return
+        }
+        if let downloaded = info["downloaded"] as? Int64, let total = info["total"] as? Int64 {
+            state.downloadedBytes = downloaded
+            state.totalBytes = total
+            state.downloadPhase = .downloading
+        } else if let fraction = info["progress"] as? Double {
+            let total: Int64 = 986_000_000
+            state.downloadedBytes = Int64(fraction * Double(total))
+            state.totalBytes = total
+            state.downloadPhase = fraction >= 1.0 ? .complete : .downloading
         }
     }
 }

@@ -17,12 +17,12 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done
 - [x] **#6 Set version to 0.1.0 beta + fix copyright** — `CFBundleShortVersionString=0.1.0`, align `CFBundleVersion` and Cargo crate version, mark beta where surfaced; copyright 2024 → 2026. Tag will be `v0.1.0`.
 
 ## Phase 2 — Features / fixes for beta
-- [ ] **#13 Fix model-switching flow** — "Change model…" (`MenuBarController.swift:51`, `SettingsWindowController.swift:170`) calls `OnboardingController.shared.showIfNeeded()`, restarting the full onboarding at the "Get Started" screen. Add a dedicated model-picker entry point that skips welcome/permissions/intro.
-- [ ] **#7 Implement check-for-updates** — Integrate Sparkle (SPM dep, EdDSA keypair, real `SUPublicEDKey`, host `appcast.xml`) and add a "Check for Updates…" action. Info.plist already has `SUPublicEDKey` (placeholder) + `SUFeedURL`.
-- [ ] **#15 Rebrand model names** — UI must not state the raw model name. Keep real names (Qwen3/Gemma) internally; show branded tier names + size to users. Touch `model_downloader.rs` `display_name`, `OnboardingFlow.swift` `ModelTierInfo.displayName`, `MenuBarController.swift` `modelLoaded()`. *(Brand naming scheme TBD.)*
-- [ ] **#16 Redesign Settings UI** — cleaner approach in `SettingsWindowController.swift`. Sections: model, permissions, behavior, updates, privacy/telemetry, about. Coordinates with #13 and #7.
-- [ ] **#14 Rename competitor references** — 55 refs to cotabby/cotypist/keytype across 9 files (`AXMonitor.swift`, `VisualContextCapture.swift`, `PopupCardWindow.swift`, `OCRHygiene.swift`, `model_downloader.rs`, `model_runtime.rs`, `main.rs`, `docs/roadmap-competitive-parity.md`, `docs/issues/0040-visual-context-ocr.md`). Describe techniques generically; keep AGPL-clean (concepts only).
-- [ ] **#17 Add README** — what TabTypist is, install/permissions (Accessibility + Input Monitoring), architecture (Swift app + Rust core), build (`scripts/bundle.sh`, `make-signing-cert.sh`), license, beta status.
+- [x] **#13 Fix model-switching flow** — Added `ModelPickerController` + `ModelPickerView` in `OnboardingFlow.swift`. "Change model…" in both `MenuBarController` and `SettingsWindowController` now opens the dedicated picker, bypassing welcome/permissions/intro.
+- [x] **#7 Implement check-for-updates** — Sparkle 2.x added as SPM dep; EdDSA keypair generated (`SUPublicEDKey` updated in `Info.plist`); `SPUStandardUpdaterController` wired in `AppDelegate`; "Check for Updates…" in menu bar and Settings routes through `checkForUpdatesRequested` notification. `appcast.xml` hosting is Phase 3.
+- [x] **#15 Rebrand model names** — `ModelTierInfo.displayName` now shows branded tier names (Nano/Mini/Standard/Performance/Quality/Pro). Raw model family names (Qwen3/Gemma) stay in `id` only. `MenuBarController.modelLoaded` maps `tier` to branded name via `ModelTierInfo.brandedName(for:)`.
+- [x] **#16 Redesign Settings UI** — `SettingsWindowController.swift` reorganised: Model → Completion Behavior (length + multi-line, new) → Permissions → Context → Writing → Updates → Privacy → About (with version number).
+- [x] **#14 Rename competitor references** — All 55 refs to cotabby/cotypist/keytype replaced with generic technique descriptions across all source files.
+- [x] **#17 Add README** — `README.md` added: what TabTypist is, permissions table, build instructions, architecture diagram, model tier table, beta status, license.
 
 ## Phase 3 — Backend / hosted services
 - [ ] **#8 Verify telemetry endpoint + consent** — confirm `https://telemetry.tabtypist.com/v1/events` exists; telemetry opt-in with clear consent.

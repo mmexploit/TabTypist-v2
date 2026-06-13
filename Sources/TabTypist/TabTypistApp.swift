@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Sparkle
 import SwiftUI
 
 // TabTypist is a macOS menu bar app.
@@ -23,9 +24,25 @@ struct TabTypistApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private var coreProcess: Process?
+    private var updaterController: SPUStandardUpdaterController?
+    private var checkForUpdatesCancellable: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+
+        checkForUpdatesCancellable = NotificationCenter.default.addObserver(
+            forName: .checkForUpdatesRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updaterController?.checkForUpdates(nil)
+        }
 
         // Set up menu bar
         MenuBarController.shared.setup()
@@ -173,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             case "modelLoaded":
                 let tier        = (params["tier"]        as? String) ?? ""
                 let displayName = (params["displayName"] as? String) ?? ""
+                UserDefaults.standard.set(tier, forKey: "activeModelTier")
                 MenuBarController.shared.modelLoaded(tier: tier, displayName: displayName)
 
             case "updateMenuBar":
@@ -208,4 +226,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
 extension Notification.Name {
     static let downloadProgressUpdated = Notification.Name("TabTypist.downloadProgressUpdated")
+    static let checkForUpdatesRequested = Notification.Name("TabTypist.checkForUpdatesRequested")
 }

@@ -41,11 +41,8 @@ pub struct ModelCatalog;
 
 impl ModelCatalog {
     /// Full six-tier catalog — base checkpoints only (no instruct/chat models).
-    /// Both competing products converged on base-model continuation: instruct
-    /// models reply to context, echo prefixes, and leak chat scaffolding no
-    /// matter how the prompt is framed. mini/standard/quality/pro are the exact
-    /// GGUF files Cotabby 2 ships (field-validated for inline autocomplete);
-    /// nano/performance fill the remaining tiers from the same Qwen base family.
+    /// Base-model continuation avoids the instruct issue where models reply to
+    /// context, echo prefixes, and leak chat scaffolding regardless of prompting.
     /// URLs and SHA-256 values marked `placeholder_*` are filled in before each
     /// release after the maintainer verifies and signs the GGUF file with the
     /// TabTypist Ed25519 key.

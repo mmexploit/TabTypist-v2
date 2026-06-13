@@ -61,10 +61,10 @@ final class PopupCardWindow: NSPanel {
     ]
 
     /// True when popup mode should be used for the given app (user-pinned, automatic,
-    /// or because the caret geometry fails validation). The geometry gate is cotabby's
-    /// caret-quality idea: a caret taller than any plausible text line, or lying
-    /// outside the field it supposedly belongs to, is junk — trusting it paints ghost
-    /// text over existing content even in apps not on the bundle list.
+    /// or because the caret geometry fails validation). The geometry gate: a caret
+    /// taller than any plausible text line, or lying outside the field it supposedly
+    /// belongs to, is junk — trusting it paints ghost text over existing content even
+    /// in apps not on the bundle list.
     static func shouldUsePopup(
         bundleId: String,
         caretHeight: CGFloat,

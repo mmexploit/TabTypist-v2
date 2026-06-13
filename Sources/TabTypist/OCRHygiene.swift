@@ -1,8 +1,7 @@
 import Foundation
 
 // General-purpose hygiene for screen-OCR text headed into the completion prompt.
-// Filter design follows Cotabby's hygiene/sanitizer concepts (original implementation —
-// Cotabby is AGPL-licensed, so no code is shared). Every rule here is STRUCTURAL:
+// Every rule here is STRUCTURAL:
 // nothing pattern-matches a specific app's chrome, so the same pass cleans Telegram
 // timestamps, Slack toolbars, terminal separators, and whatever ships next year.
 //

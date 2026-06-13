@@ -40,9 +40,9 @@ struct ContextUpdate {
     clipboard_context: String, // clipboard text when user has opted in; "" otherwise
 }
 
-/// Prediction debounce derived from the last observed generation latency (cotabby
-/// DebouncePolicy). cotabby's bands are 15/25/55 ms, tuned for sub-1B models with a
-/// 20 ms configured fallback; ours add a heavier tier and keep the 280 ms fallback
+/// Prediction debounce derived from the last observed generation latency (adaptive
+/// debounce policy). Reference bands are 15/25/55 ms for sub-1B models with a
+/// 20 ms fallback; our implementation adds a heavier tier and keeps the 280 ms fallback
 /// for anything slower, because on a multi-billion-param model letting keystrokes
 /// pile doomed generations onto a decoder that cannot keep up drags the machine.
 fn adaptive_debounce_ms(last_latency_ms: Option<u64>, fallback: u64) -> u64 {
@@ -166,8 +166,8 @@ async fn main() -> Result<()> {
             // Debounce before kicking off inference. A fixed value serves two masters
             // badly: a sub-1B model could fire after ~20 ms, while on a multi-billion-
             // param model (e.g. Qwen3 4B) every micro-pause launches a full decode and
-            // rapid typing drags the machine. cotabby's DebouncePolicy keys the debounce
-            // to the last observed generation latency instead — fast model, snappy
+            // rapid typing drags the machine. The adaptive debounce policy keys the
+            // trigger to the last observed generation latency — fast model, snappy
             // trigger; slow model, calm trigger (each cancelled decode still costs a
             // setup + teardown). Until a first latency exists the conservative 280 ms
             // fallback applies. TABTYPIST_DEBOUNCE_MS pins a fixed value for tuning.
@@ -231,7 +231,7 @@ async fn main() -> Result<()> {
                 };
 
                 // Build full context for instruct-model personalisation. Clipboard is
-                // relevance-gated (cotabby ClipboardRelevanceFilter): unless it shares
+                // relevance-gated: unless it shares
                 // at least one significant token with what the user is writing, it's
                 // unrelated content that steers the completion off the sentence in hand.
                 let clipboard_c = if s.clipboard_context_enabled
@@ -277,7 +277,7 @@ async fn main() -> Result<()> {
                     info!("visual_context text: {}", instr_ctx.visual_context.replace('\n', " | "));
                 }
 
-                // Cooperative cancellation (cotabby): if a newer context update lands
+                // Cooperative cancellation: if a newer context update lands
                 // while inference is running, flag the in-flight decode to bail after
                 // its current token, then immediately regenerate from the latest state.
                 // A cancelled generation leaves the KV cache valid — the rerun reuses it.
@@ -331,13 +331,13 @@ async fn main() -> Result<()> {
                             info!("completion empty after truncation — suppressing overlay");
                             continue 'outer;
                         }
-                        // Insertion safety gate (cotabby): U+FFFD, control characters,
+                        // Insertion safety gate: U+FFFD, control characters,
                         // or whitespace-only output is corruption, never a completion.
                         if !model_runtime::is_safe_to_insert(&text) {
                             info!("suppressing unsafe completion {:?}", text);
                             continue 'outer;
                         }
-                        // Junk-run guard (cotabby CompletionSeamGuard): a run of 4+
+                        // Junk-run guard: a run of 4+
                         // identical punctuation/symbol chars ("....", "$$$$") is decode
                         // noise — unless it merely extends a divider the user already
                         // has at the caret.
@@ -352,7 +352,7 @@ async fn main() -> Result<()> {
                             info!("suppressing completion that abandons the current word {:?}", text);
                             continue 'outer;
                         }
-                        // Trailing-duplication guard (cotabby): never surface a completion
+                        // Trailing-duplication guard: never surface a completion
                         // that mostly retypes the text already after the caret — accepting
                         // it would insert a duplicate.
                         if model_runtime::duplicates_trailing_text(&text, &update.suffix) {

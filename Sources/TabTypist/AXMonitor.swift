@@ -36,7 +36,7 @@ final class AXMonitor: @unchecked Sendable {
     private var pendingOCRWork: DispatchWorkItem?
     private var ocrInFlight: Bool = false
     private var lastOCRCompletedAt: Date = .distantPast
-    private static let ocrSettleInterval: TimeInterval = 0.25  // Cotabby's 250 ms settle
+    private static let ocrSettleInterval: TimeInterval = 0.25  // 250 ms settle after focus change
     private static let ocrRefreshInterval: TimeInterval = 15
 
     // Adaptive backoff: start at 80 ms, double after 5 unchanged polls, cap at 200 ms.
@@ -113,9 +113,9 @@ final class AXMonitor: @unchecked Sendable {
     }
 
     /// Schedule a single screenshot→OCR capture for a newly focused field, after a
-    /// short settle window (Cotabby's 250 ms). A rapid field switch cancels the prior
-    /// pending capture and re-arms, so a churning/flapping focus runs the pipeline once
-    /// it stabilises rather than once per flap. The result is cached and reused for
+    /// short settle window (250 ms). A rapid field switch cancels the prior pending
+    /// capture and re-arms, so a churning/flapping focus runs the pipeline once it
+    /// stabilises rather than once per flap. The result is cached and reused for
     /// every completion in that field — no re-capture while the user keeps typing.
     private func scheduleFieldOCR(
         pid: pid_t, field: CGRect, bundle: String, fieldKey: String, fieldText: String
@@ -494,7 +494,7 @@ final class AXMonitor: @unchecked Sendable {
         }
         #endif // canImport(FoundationModels)
 
-        // Capture OCR once per focused field, then reuse it (Cotabby's model). Both
+        // Capture OCR once per focused field, then reuse it. Both
         // frames are AX coords (top-left origin), which is what ScreenCaptureKit's
         // sourceRect also uses — so no flips are needed downstream.
         //
@@ -505,8 +505,7 @@ final class AXMonitor: @unchecked Sendable {
         if fieldKey != lastOCRFieldKey {
             lastOCRFieldKey = fieldKey
             // Drop the previous field's excerpt so it can't leak into this field's
-            // prompt; the new capture repopulates it once ready (Cotabby returns
-            // nothing until the new field's capture completes).
+            // prompt; the new capture repopulates it once ready.
             latestVisualContext = ""
             latestVisualContextBundle = ""
             scheduleFieldOCR(pid: pid, field: inputFrameAX, bundle: bundleId,

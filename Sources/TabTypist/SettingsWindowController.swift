@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import IOKit.hid
 
-// Per-app toggle + telemetry consent + personalisation + model browser.
 final class SettingsWindowController: NSObject {
     static let shared = SettingsWindowController()
 
@@ -18,10 +17,8 @@ final class SettingsWindowController: NSObject {
         let hosting = NSHostingView(rootView: SettingsView())
         hosting.autoresizingMask = [.width, .height]
 
-        // Resizable with a sensible minimum so content scrolls instead of clipping on
-        // short displays — the previous fixed 760pt height cut off lower sections.
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 740),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -38,137 +35,58 @@ final class SettingsWindowController: NSObject {
 }
 
 struct SettingsView: View {
-    @State private var telemetryEnabled: Bool =
-        UserDefaults.standard.bool(forKey: "telemetryEnabled")
-    @State private var userName: String =
-        UserDefaults.standard.string(forKey: "userName") ?? ""
-    @State private var customRulesGlobal: String =
-        UserDefaults.standard.string(forKey: "customRulesGlobal") ?? ""
-    @State private var clipboardEnabled: Bool =
-        UserDefaults.standard.bool(forKey: "clipboardContextEnabled")
-    @State private var hfToken: String =
-        UserDefaults.standard.string(forKey: "hfToken") ?? ""
-    @State private var customModelUrl: String = ""
-    @State private var showResetConfirm: Bool = false
-    @State private var downloadingCustom: Bool = false
+    // Model
+    @State private var activeModelTier: String =
+        UserDefaults.standard.string(forKey: "activeModelTier") ?? ""
 
+    // Completion behavior
+    @State private var completionLength: String =
+        UserDefaults.standard.string(forKey: "completionLength") ?? "long"
+    @State private var multiLineEnabled: Bool =
+        UserDefaults.standard.bool(forKey: "multiLineEnabled")
+
+    // Permissions
     @State private var axGranted: Bool = AXIsProcessTrusted()
     @State private var screenGranted: Bool = CGPreflightScreenCaptureAccess()
     @State private var inputMonGranted: Bool =
         IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
 
+    // Context
+    @State private var clipboardEnabled: Bool =
+        UserDefaults.standard.bool(forKey: "clipboardContextEnabled")
+
+    // Writing
+    @State private var userName: String =
+        UserDefaults.standard.string(forKey: "userName") ?? ""
+    @State private var customRulesGlobal: String =
+        UserDefaults.standard.string(forKey: "customRulesGlobal") ?? ""
+
+    // Model downloads
+    @State private var hfToken: String =
+        UserDefaults.standard.string(forKey: "hfToken") ?? ""
+    @State private var customModelUrl: String = ""
+    @State private var downloadingCustom: Bool = false
+
+    // Privacy
+    @State private var telemetryEnabled: Bool =
+        UserDefaults.standard.bool(forKey: "telemetryEnabled")
+
+    // Danger zone
+    @State private var showResetConfirm: Bool = false
+
     var body: some View {
         Form {
-            Section {
-                HStack(spacing: 12) {
-                    Image(systemName: "t.square.fill")
-                        .font(.system(size: 30))
-                        .foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("TabTypist")
-                            .font(.title3.weight(.semibold))
-                        Text("Inline AI autocomplete, on-device.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.vertical, 4)
-            }
-
-            Section("Permissions") {
-                permissionRow(
-                    name: "Accessibility", granted: axGranted,
-                    detail: "Read caret position and insert completions when you press Tab."
-                ) {
-                    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-                    _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
-                    openPrivacyPane("Privacy_Accessibility")
-                }
-                permissionRow(
-                    name: "Input Monitoring", granted: inputMonGranted,
-                    detail: "Detect the Tab key so suggestions can be accepted."
-                ) {
-                    _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-                    openPrivacyPane("Privacy_ListenEvent")
-                }
-                permissionRow(
-                    name: "Screen Recording", granted: screenGranted,
-                    detail: "Optional. On-device OCR of nearby on-screen text for context-aware suggestions."
-                ) {
-                    _ = CGRequestScreenCaptureAccess()
-                    openPrivacyPane("Privacy_ScreenCapture")
-                }
-                if !screenGranted {
-                    Text("After enabling Screen Recording, macOS may ask you to quit & reopen TabTypist.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section("Privacy") {
-                Toggle("Send anonymous usage data", isOn: $telemetryEnabled)
-                    .onChange(of: telemetryEnabled) { _, enabled in
-                        UserDefaults.standard.set(enabled, forKey: "telemetryEnabled")
-                        IPCBridge.shared.notify(method: "updateSetting", params: [
-                            "key": "telemetryEnabled", "value": enabled,
-                        ])
-                    }
-                Text("Never includes your text, completions, or identity. Only: model used, accept/dismiss counts, app version.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Personalization") {
-                LabeledContent("Your name") {
-                    TextField("Used in suggestions", text: $userName)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 220)
-                        .onSubmit { sendUserName() }
-                }
-                Text("Shown to the model as context for more relevant suggestions.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Writing Style") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Global rules")
-                        .font(.subheadline.weight(.medium))
-                    TextEditor(text: $customRulesGlobal)
-                        .font(.body)
-                        .scrollContentBackground(.hidden)
-                        .padding(6)
-                        .frame(height: 80)
-                        .background(Color(nsColor: .textBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
-                        .onChange(of: customRulesGlobal) { _, newValue in
-                            sendCustomRulesGlobal(newValue)
-                        }
-                    Text("Applied to all apps. Example: use formal tone, prefer short sentences, write in British English.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section("Context") {
-                Toggle("Include clipboard text in suggestions", isOn: $clipboardEnabled)
-                    .onChange(of: clipboardEnabled) { _, enabled in
-                        UserDefaults.standard.set(enabled, forKey: "clipboardContextEnabled")
-                        IPCBridge.shared.notify(method: "updateSetting", params: [
-                            "key": "clipboardContextEnabled", "value": enabled,
-                        ])
-                    }
-                Text("TabTypist reads your clipboard to offer more relevant completions. Nothing leaves your device.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
+            // ── Model ─────────────────────────────────────────────────────────
             Section("Model") {
                 LabeledContent("Active model") {
-                    Button("Change model…") {
-                        OnboardingController.shared.showIfNeeded()
+                    HStack(spacing: 10) {
+                        if !activeModelTier.isEmpty {
+                            Text(ModelTierInfo.brandedName(for: activeModelTier))
+                                .foregroundStyle(.secondary)
+                        }
+                        Button("Change model…") {
+                            ModelPickerController.shared.show()
+                        }
                     }
                 }
 
@@ -178,7 +96,7 @@ struct SettingsView: View {
                         .frame(maxWidth: 220)
                         .onSubmit { sendHfToken() }
                 }
-                Text("Required for all model downloads. Get yours at huggingface.co/settings/tokens (read-only token is enough).")
+                Text("Required for model downloads. Get a read-only token at huggingface.co/settings/tokens.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -200,7 +118,147 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Data") {
+            // ── Completion Behavior ───────────────────────────────────────────
+            Section("Completion Behavior") {
+                LabeledContent("Length") {
+                    Picker("", selection: $completionLength) {
+                        Text("Short").tag("short")
+                        Text("Medium").tag("medium")
+                        Text("Long").tag("long")
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 200)
+                    .onChange(of: completionLength) { _, value in
+                        UserDefaults.standard.set(value, forKey: "completionLength")
+                        IPCBridge.shared.notify(method: "updateSetting", params: [
+                            "key": "completionLength", "value": value,
+                        ])
+                    }
+                }
+                Text("Short: ~11 tokens. Medium: ~18. Long: ~30.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Allow multi-paragraph completions", isOn: $multiLineEnabled)
+                    .onChange(of: multiLineEnabled) { _, enabled in
+                        UserDefaults.standard.set(enabled, forKey: "multiLineEnabled")
+                        IPCBridge.shared.notify(method: "updateSetting", params: [
+                            "key": "multiLineEnabled", "value": enabled,
+                        ])
+                    }
+                Text("Stops at blank lines when off. Token budget doubles (capped at 60) when on.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // ── Permissions ───────────────────────────────────────────────────
+            Section("Permissions") {
+                permissionRow(
+                    name: "Accessibility", granted: axGranted,
+                    detail: "Read caret position and insert completions when you press Tab."
+                ) {
+                    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+                    _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
+                    openPrivacyPane("Privacy_Accessibility")
+                }
+                permissionRow(
+                    name: "Input Monitoring", granted: inputMonGranted,
+                    detail: "Detect the Tab key so suggestions can be accepted."
+                ) {
+                    _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+                    openPrivacyPane("Privacy_ListenEvent")
+                }
+                permissionRow(
+                    name: "Screen Recording", granted: screenGranted,
+                    detail: "Optional. On-device OCR of nearby text for context-aware suggestions."
+                ) {
+                    _ = CGRequestScreenCaptureAccess()
+                    openPrivacyPane("Privacy_ScreenCapture")
+                }
+                if !screenGranted {
+                    Text("After enabling Screen Recording, macOS may ask you to quit & reopen TabTypist.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            // ── Context ───────────────────────────────────────────────────────
+            Section("Context") {
+                Toggle("Include clipboard text in suggestions", isOn: $clipboardEnabled)
+                    .onChange(of: clipboardEnabled) { _, enabled in
+                        UserDefaults.standard.set(enabled, forKey: "clipboardContextEnabled")
+                        IPCBridge.shared.notify(method: "updateSetting", params: [
+                            "key": "clipboardContextEnabled", "value": enabled,
+                        ])
+                    }
+                Text("TabTypist reads your clipboard to offer more relevant completions. Nothing leaves your device.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // ── Writing ───────────────────────────────────────────────────────
+            Section("Writing") {
+                LabeledContent("Your name") {
+                    TextField("Used in suggestions", text: $userName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 220)
+                        .onSubmit { sendUserName() }
+                }
+                Text("Shown to the model as context for more relevant suggestions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Global rules")
+                        .font(.subheadline.weight(.medium))
+                    TextEditor(text: $customRulesGlobal)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                        .frame(height: 80)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
+                        .onChange(of: customRulesGlobal) { _, newValue in
+                            sendCustomRulesGlobal(newValue)
+                        }
+                    Text("Applied to all apps. Example: use formal tone, prefer short sentences, write in British English.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            // ── Updates ───────────────────────────────────────────────────────
+            Section("Updates") {
+                Button("Check for Updates…") {
+                    NotificationCenter.default.post(name: .checkForUpdatesRequested, object: nil)
+                }
+            }
+
+            // ── Privacy ───────────────────────────────────────────────────────
+            Section("Privacy") {
+                Toggle("Send anonymous usage data", isOn: $telemetryEnabled)
+                    .onChange(of: telemetryEnabled) { _, enabled in
+                        UserDefaults.standard.set(enabled, forKey: "telemetryEnabled")
+                        IPCBridge.shared.notify(method: "updateSetting", params: [
+                            "key": "telemetryEnabled", "value": enabled,
+                        ])
+                    }
+                Text("Never includes your text, completions, or identity. Only: model tier, accept/dismiss counts, app version.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // ── About ─────────────────────────────────────────────────────────
+            Section("About") {
+                LabeledContent("Version") {
+                    Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("License") {
+                    Text("Functional Source License 1.1")
+                        .foregroundStyle(.secondary)
+                }
                 Button("Reset TabTypist…", role: .destructive) { showResetConfirm = true }
             }
         }
@@ -220,15 +278,14 @@ struct SettingsView: View {
         ) { note in
             if let phase = note.userInfo?["phase"] as? String {
                 downloadingCustom = (phase == "downloading" || phase == "verifying")
-                if phase == "complete" || phase == "failed" {
-                    customModelUrl = ""
-                }
+                if phase == "complete" || phase == "failed" { customModelUrl = "" }
             }
         }
-        // Permissions can change while this window is open (the user grants them in
-        // System Settings). Re-poll periodically so the rows update live.
         .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
             refreshPermissions()
+        }
+        .onAppear {
+            activeModelTier = UserDefaults.standard.string(forKey: "activeModelTier") ?? ""
         }
     }
 

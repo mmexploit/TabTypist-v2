@@ -3,8 +3,7 @@ import AppKit
 import ScreenCaptureKit
 
 // Captures a compact screenshot of the focused window around the input field and
-// extracts text via on-device Vision OCR. Approach adapted from cotabby's
-// WindowScreenshotService + ScreenTextExtractor:
+// extracts text via on-device Vision OCR:
 //   • capture the focused window IN ISOLATION (desktopIndependentWindow) so other
 //     windows can't occlude/clip the text,
 //   • crop a field-centred band (field width + horizontal padding, a tall band above)
@@ -27,7 +26,7 @@ final class VisualContextCapture: @unchecked Sendable {
     /// accurate mode benefits from pixels, but its cost scales with pixel area and a Retina
     /// capture of the band arrives well above this cap either way; 1200 keeps typical
     /// 11–13pt UI text comfortably above the recognition floor while cutting the Vision
-    /// workload ~44% versus the previous 1600 (cotabby's right-sizing).
+    /// workload ~44% versus the previous 1600.
     private static let maxImageDimension = 1200
 
     /// Recent Vision extractions keyed by a pixel hash of the captured crop, so the
@@ -195,8 +194,7 @@ final class VisualContextCapture: @unchecked Sendable {
             // Accurate, with language correction: this text only conditions the prompt
             // (it is never shown or inserted), and correction cuts garbled recognitions
             // at the source — the hygiene filters downstream can only drop junk, not
-            // repair it (cotabby reversed its earlier correction-off choice for the
-            // same reason). A low minimum text height keeps small chat text readable.
+            // repair it. A low minimum text height keeps small chat text readable.
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = true
             request.minimumTextHeight = 0.008

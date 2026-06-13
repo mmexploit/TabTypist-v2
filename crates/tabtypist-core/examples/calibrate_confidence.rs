@@ -1,4 +1,4 @@
-// Calibration harness for the instruct confidence floor (cotabby's text-stream gate).
+// Calibration harness for the instruct confidence floor (average per-token log-probability gate).
 //
 // Standalone (this crate is binary-only, so examples cannot import its modules): it mirrors
 // the production instruct prompt, sampler, and the log-softmax used by `token_logprob`, then

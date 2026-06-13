@@ -32,7 +32,7 @@ pub trait Completer: Send + Sync {
     /// Cooperative-cancellation flag for the decode loop. The caller sets it to true
     /// when a newer context update supersedes the in-flight request; the decode loop
     /// checks it per token and bails early instead of running the full budget while
-    /// the next request waits behind it (cotabby's Task.isCancelled check).
+    /// the next request waits behind it (cooperative cancellation via atomic flag).
     fn cancel_handle(&self) -> Option<Arc<AtomicBool>> {
         None
     }
@@ -207,10 +207,10 @@ fn do_complete(
     use llama_cpp_2::llama_batch::LlamaBatch;
     use llama_cpp_2::model::AddBos;
 
-    // Window the prompt to the recent tail (cotabby's truncatedPromptPrefix): sending
-    // an entire editor buffer hurts prefill latency with little quality gain, and long
-    // stale context steers the completion away from the local continuation. The full
-    // prefix is still used for echo suppression / spacing in normalize_completion.
+    // Window the prompt to the recent tail: sending an entire editor buffer hurts
+    // prefill latency with little quality gain, and long stale context steers the
+    // completion away from the local continuation. The full prefix is still used
+    // for echo suppression / spacing in normalize_completion.
     //
     // In plain-continuation mode a conditioning preface (persona, style, context —
     // described as facts, never commanded) precedes the caret text, separated by a
@@ -238,9 +238,9 @@ fn do_complete(
     // path can never push `pos` past the context and overflow the KV cache.
     let max_prefix = (N_CTX as usize).saturating_sub(max_tokens as usize + 4);
 
-    // KV reuse via longest-common-token-prefix (cotabby obtainAutocompleteSequence):
-    // trim the cache to the shared prefix and decode only the remainder. Unlike the
-    // old strict-forward-extension check this also salvages most of the cache on
+    // KV reuse via longest-common-token-prefix: trim the cache to the shared prefix
+    // and decode only the remainder. Unlike the old strict-forward-extension check
+    // this also salvages most of the cache on
     // deletions, mid-word edits, and prefix-window slides. Always leave at least one
     // token to decode so the sampler has fresh logits.
     let common = common_prefix_len(kv_tokens, &new_tokens);
@@ -410,8 +410,7 @@ fn do_complete_instruct(
     use llama_cpp_2::llama_batch::LlamaBatch;
     use llama_cpp_2::model::AddBos;
 
-    // Build the instruction body. Structure adapted from cotabby's LlamaPromptRenderer,
-    // which drives the same gemma-4-E2B model: one richly-structured plain-text block
+    // Build the instruction body: one richly-structured plain-text block
     // with explicit "this is autocomplete, not chat" framing, the prefix labelled and
     // placed LAST as "Text before caret:", and a final cue that the next line must begin
     // with the continuation. Critically there is NO assistant prefill — the model
@@ -480,8 +479,8 @@ fn do_complete_instruct(
 
     sections.push(String::new());
     sections.push("The user has typed (continue from the end, do not repeat it):".into());
-    // Window to the recent word tail (cotabby): keeps the prompt small and stops long
-    // stale context from steering the continuation. Placed LAST so the KV reuse below
+    // Window to the recent word tail: keeps the prompt small and stops long stale
+    // context from steering the continuation. Placed LAST so the KV reuse below
     // keeps the static instruction + background cached across keystrokes.
     sections.push(window_prefix(prefix));
     let body = sections.join("\n");
@@ -516,10 +515,10 @@ fn do_complete_instruct(
         new_tokens
     };
 
-    // KV reuse (cotabby): the instruct prompt's static head — instruction, rules,
-    // background — is identical across keystrokes, and the user prefix sits at the
-    // very end. Trim the cache to the longest common token prefix with the previous
-    // prompt and decode only the changed tail instead of re-prefilling everything.
+    // KV reuse: the instruct prompt's static head — instruction, rules, background —
+    // is identical across keystrokes, and the user prefix sits at the very end. Trim
+    // the cache to the longest common token prefix with the previous prompt and decode
+    // only the changed tail instead of re-prefilling everything.
     let reusable = if was_truncated {
         0 // front-truncated prompts shift all positions; nothing lines up.
     } else {
@@ -564,9 +563,9 @@ fn do_complete_instruct(
     .flatten()
     .collect();
 
-    // Same sampler as the base path (cotabby uses one sampling config for every
-    // request). The connector-loop failure mode is handled by the word-stutter guard
-    // below rather than a heavy repeat penalty, which distorted word choice.
+    // Same sampler as the base path. The connector-loop failure mode is handled by
+    // the word-stutter guard below rather than a heavy repeat penalty, which
+    // distorted word choice.
     let mut sampler = completion_sampler();
     seed_penalty_window(&mut sampler, &tokens);
 
@@ -575,16 +574,16 @@ fn do_complete_instruct(
     let mut tokens_emitted = 0usize;
     let mut pos = tokens.len() as i32;
 
-    // Confidence tracking — cotabby's text-stream gate (LlamaGenerationOptions.confidenceFloor).
-    // Accumulate the average per-token log-probability of the emitted tokens. When the model
-    // runs past a natural stopping point and keeps the sentence going by inventing/chaining,
-    // its per-token confidence falls; a completion whose average drops below the floor is
-    // suppressed wholesale rather than shown as a run-on. Tunable via TABTYPIST_CONFIDENCE_FLOOR.
+    // Confidence tracking: accumulate average per-token log-probability of emitted
+    // tokens. When the model runs past a natural stopping point and keeps the sentence
+    // going by inventing/chaining, per-token confidence falls; a completion whose
+    // average drops below the floor is suppressed wholesale. Tunable via
+    // TABTYPIST_CONFIDENCE_FLOOR.
     //
-    // The floor is read up front because the per-token log-softmax it feeds costs a full
-    // exp() pass over the vocabulary; with the floor at its default (-inf, disabled) and
-    // the CONFIDENCE log off, nothing consumes the value, so the pass is skipped entirely
-    // (cotabby's "gated logprobs"). The argmax-EOG check shares the remaining single scan.
+    // The floor is read up front because the per-token log-softmax it feeds costs a
+    // full exp() pass over the vocabulary; with the floor at its default (-inf,
+    // disabled) and the CONFIDENCE log off, the pass is skipped entirely (gated
+    // logprobs). The argmax-EOG check shares the remaining single scan.
     let floor = std::env::var("TABTYPIST_CONFIDENCE_FLOOR")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
@@ -815,7 +814,7 @@ fn strip_trailing_word_stutter(text: &str) -> Option<String> {
 /// cycles whole phrases at least as often as single words, and nothing else in the
 /// chain can see it — the repeat penalty (1.05) provably fails to stop it, and the
 /// echo/duplication filters compare against the USER's text, not the completion's
-/// own tail. (Neither cotabby nor cotypist guards this shape.)
+/// own tail.
 ///
 /// Words compare case-insensitively but otherwise verbatim, so punctuation drift
 /// protects legitimate repeats: "New York, New York" survives because "York," and
@@ -863,16 +862,16 @@ fn strip_trailing_phrase_loop(text: &str) -> Option<String> {
 }
 
 /// Default average per-token log-probability below which an instruct completion is
-/// suppressed as low-confidence — cotabby's `LlamaGenerationOptions.confidenceFloor`.
-/// Defaults to disabled (`-inf`), matching cotabby: calibration on gemma-4-E2B (see
-/// examples/calibrate_confidence.rs) showed that with our near-greedy sampling the model
+/// suppressed as low-confidence. Defaults to disabled (`-inf`): calibration on
+/// gemma-4-E2B (see examples/calibrate_confidence.rs) showed that with our near-greedy
+/// sampling the model
 /// stays confident (~-0.3 avg) even when inventing, so a *good* completion and pure noise
 /// score the same — no fixed floor separates them. Kept wired and tunable via
 /// TABTYPIST_CONFIDENCE_FLOOR (e.g. -0.5) for experimentation, but off by default.
 const DEFAULT_CONFIDENCE_FLOOR: f64 = f64::NEG_INFINITY;
 
 /// One fused scan of the logits at output position `idx`, so the decode loop pays for
-/// exactly what it consumes (cotabby's "gated logprobs" perf fix does the same):
+/// exactly what it consumes (gated logprobs — skip the exp() pass when not needed):
 /// - always returned: the argmax token (for the argmax-EOG stop) — one comparison
 ///   pass, no `exp()` work;
 /// - when `logprob_token` is set: the log-probability the model assigned to that
@@ -910,7 +909,7 @@ fn scan_logits(
 
 /// True when the raw distribution's most-likely token at output position `idx` is an
 /// end-of-generation token: the model wants to stop here even though the stochastic
-/// sampler drew something else (cotabby LlamaGenerationOptions.stopAtArgmaxEOG, ON by
+/// sampler drew something else (argmax-EOG early stop, ON by
 /// default there too). This is the anti-rambling stop the sentence classifier cannot
 /// express — lists, fragments, code — and it fires BEFORE the sampled-but-unwanted
 /// token is appended, so the completion finalises with the text accumulated so far.
@@ -924,7 +923,7 @@ fn argmax_is_eog(
 
 /// True when the completion introduces a run of four or more identical
 /// punctuation/symbol characters ("....", "$$$$") — decode noise, never prose
-/// (cotabby CompletionSeamGuard's junk-run rule). A run flush against the caret that
+/// (junk-run guard). A run flush against the caret that
 /// continues an identical run the user already has is an existing divider being
 /// extended, not fresh junk — but the preceding run must be a real one (2+): a
 /// sentence that merely ends in "." must not exempt "....".
@@ -953,16 +952,16 @@ pub fn introduces_junk_punctuation_run(completion: &str, prefix: &str) -> bool {
 }
 
 /// Minimum tokens generated before the sentence-boundary early stop may fire, guarding
-/// against degenerate instant stops like a lone leading period (cotabby DecodeStopPolicy).
+/// against degenerate instant stops like a lone leading period.
 const SENTENCE_STOP_MIN_TOKENS: usize = 2;
 
 /// Tokens the repeat-penalty stage remembers (its `penalty_last_n` ring buffer).
 const PENALTY_WINDOW: usize = 64;
 
-/// Shared sampler chain for both inference paths — cotabby's shipped SamplingConfig:
+/// Shared sampler chain for both inference paths:
 /// gentle repeat penalty (1.05; heavier values distort word choice mid-sentence),
-/// top-k 20 → top-p 0.7 → min-p 0.08 → temp 0.1, then dist with a FIXED seed so the
-/// same context always produces the same ghost text (their defaultSamplerSeed).
+/// top-k 20 → top-p 0.7 → min-p 0.08 → temp 0.1, then dist with a FIXED seed so
+/// the same context always produces the same ghost text.
 fn completion_sampler() -> llama_cpp_2::sampling::LlamaSampler {
     use llama_cpp_2::sampling::LlamaSampler;
     LlamaSampler::chain_simple([
@@ -995,12 +994,12 @@ fn common_prefix_len(a: &[LlamaToken], b: &[LlamaToken]) -> usize {
     a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
 }
 
-/// Character/word caps for the prompt window (cotabby SuggestionConfiguration.standard).
+/// Character/word caps for the prompt window.
 const PREFIX_WINDOW_CHARS: usize = 1000;
 const PREFIX_WINDOW_WORDS: usize = 50;
 
-/// Keep only the latest short word tail of the prefix for the prompt (cotabby
-/// truncatedPromptPrefix): last 1000 chars, then the last 50 whitespace-separated
+/// Keep only the latest short word tail of the prefix for the prompt: last 1000
+/// chars, then the last 50 whitespace-separated
 /// words joined by single spaces. This bounds prefill latency in long documents,
 /// stops stale context from steering output, and (by dropping trailing whitespace)
 /// makes the prompt end at a clean word boundary so the model's first token decides
@@ -1020,8 +1019,8 @@ pub fn window_prefix(prefix: &str) -> String {
     words[words.len().saturating_sub(PREFIX_WINDOW_WORDS)..].join(" ")
 }
 
-/// Conditioning preface for the base-model continuation path (cotabby
-/// BaseCompletionPromptRenderer). A base model has no instruction-following channel —
+/// Conditioning preface for the base-model continuation path. A base model has no
+/// instruction-following channel —
 /// it conditions on description, it does not obey commands — so persona, style,
 /// language, and supporting context are folded into short factual lines. The app name
 /// is deliberately excluded: app/window metadata biases a base model toward
@@ -1090,7 +1089,7 @@ pub fn base_preface(ctx: &InstrContext) -> String {
 }
 
 /// Lowercased abbreviations whose trailing period is part of the word, not a sentence
-/// end (cotabby SentenceBoundaryClassifier).
+/// end.
 const ABBREVIATIONS: &[&str] = &[
     "mr", "mrs", "ms", "dr", "st", "vs", "eg", "ie", "etc", "no", "fig", "approx", "inc", "ltd",
 ];
@@ -1131,7 +1130,7 @@ fn is_terminal_period(text: &str, period_idx: usize) -> bool {
 
 /// Whether `text` ends at a real sentence boundary: after skipping trailing whitespace
 /// and a run of closing quotes/brackets, the last character is `!`, `?`, or a terminal
-/// period (cotabby SentenceBoundaryClassifier.endsSentence).
+/// period.
 pub fn ends_sentence(text: &str) -> bool {
     let mut s = text.trim_end();
     while let Some(c) = s.chars().last() {
@@ -1268,7 +1267,7 @@ pub fn duplicates_preceding_text(completion: &str, prefix: &str) -> bool {
 }
 
 /// True when `completion` would mostly retype text that already follows the caret
-/// (cotabby TrailingDuplicationFilter). Comparison runs on a folded view — lowercase,
+/// (trailing-duplication filter). Comparison runs on a folded view — lowercase,
 /// alphanumerics only — so a stray leading bullet, quote, or case difference cannot
 /// defeat the match.
 pub fn duplicates_trailing_text(completion: &str, trailing: &str) -> bool {
@@ -1302,7 +1301,7 @@ pub fn duplicates_trailing_text(completion: &str, trailing: &str) -> bool {
 
 // ── Completion normaliser ─────────────────────────────────────────────────────
 
-/// Opening / role markers (cotabby ControlTokenMarkers.openingMarkers plus the
+/// Opening / role markers (chat template opening tokens plus the
 /// gemma-4 `<|turn>` family). The real continuation sits ADJACENT to these, so only
 /// the marker itself is removed and the surrounding text kept. Longer variants must
 /// precede their prefixes ("<|im_start|>assistant" before "<|im_start|>") or the
@@ -1323,7 +1322,7 @@ const OPENING_MARKERS: &[&str] = &[
     "[/INST]",
 ];
 
-/// Stop / end-of-turn markers (cotabby ControlTokenMarkers.stopMarkers plus gemma-4
+/// Stop / end-of-turn markers (chat template stop tokens plus gemma-4
 /// `<turn|>`). A stop marker means the model believes the turn is over: everything
 /// after it is a hallucinated NEW turn, never a continuation of the user's text, so
 /// the completion is truncated at the first one — removing the marker in place would
@@ -1339,7 +1338,7 @@ const STOP_MARKERS: &[&str] = &[
     "<turn|>",
 ];
 
-/// Decode-time scaffolding stop (cotabby DecodeStopPolicy.scaffoldingMarker): once a
+/// Decode-time scaffolding stop: once a
 /// stop marker is in the accumulated text, every further token is guaranteed-discarded
 /// work — the normaliser truncates there anyway — so the decode loop stops immediately,
 /// exactly in the worst case where the model has drifted into template scaffolding.
@@ -1531,8 +1530,8 @@ fn suppress_context_copy(completion: String, ctx: &InstrContext) -> String {
     }
 }
 
-/// Final safety predicate before a completion may be shown or inserted (cotabby
-/// InsertionSafetyGate, original implementation): rejects U+FFFD (lossy
+/// Final safety predicate before a completion may be shown or inserted: rejects
+/// U+FFFD (lossy
 /// detokenization), control characters other than newline (corruption, never
 /// content), and whitespace-only output. Deliberately does NOT judge punctuation —
 /// a lone ")" or "." is a legitimate inline completion.
@@ -1563,7 +1562,7 @@ pub fn breaks_word_continuation(completion: &str, prefix: &str) -> bool {
 }
 
 /// Whether `context` shares at least one significant token (3+ chars, lowercased)
-/// with `text` (cotabby ClipboardRelevanceFilter's overlap heuristic): clipboard
+/// with `text` (relevance overlap heuristic): clipboard
 /// content that has nothing in common with what the user is writing is noise that
 /// steers the completion off the sentence in hand, so it isn't injected at all.
 pub fn shares_significant_token(context: &str, text: &str) -> bool {
@@ -2030,7 +2029,7 @@ mod tests {
         assert!(!contains_scaffolding_marker("plain prose"));
     }
 
-    // ── junk punctuation runs (cotabby CompletionSeamGuard) ───────────────────
+    // ── junk punctuation runs ─────────────────────────────────────────────────
 
     #[test]
     fn junk_run_caught() {
