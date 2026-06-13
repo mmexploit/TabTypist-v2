@@ -28,17 +28,19 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done
 - [ ] **#8 Verify telemetry endpoint + consent** — confirm `https://telemetry.tabtypist.com/v1/events` exists; telemetry opt-in with clear consent.
 - [ ] **#9 Verify model download flow for fresh user** — 6 GGUFs from HuggingFace `mradermacher/*` are on public ungated repos (no token required; verified via 302→public CDN). Verify onboarding download works on a clean install. Self-hosting GGUFs is still preferred for reliability.
 
-## Phase 4 — Signing & notarization
-- [~] **#10 Confirm CI signing/notarization + dry-run** — Pipeline implemented in `.github/workflows/release.yml`: inside-out codesign (XPC → Sparkle.framework → Rust core → Swift binary → bundle), hardened runtime + entitlements, `notarytool submit --wait`, `stapler staple`. Sparkle `startingUpdater` flipped to `true`. Appcast template at `docs/appcast.xml`. **Remaining (manual):** set 7 GitHub secrets; export Sparkle private key for `SPARKLE_PRIVATE_KEY`; dry-run by pushing a `v0.1.0-rc1` tag; host `appcast.xml` at `https://tabtypist.com/appcast.xml`.
+## Phase 4 — Signing & distribution
+- [~] **#10 CI release pipeline + dry-run** — `release.yml` builds release binaries, signs ad-hoc (no Developer ID needed for v0.1.0 manual-download beta), creates DMG, generates Sparkle appcast entry, publishes GitHub pre-release. Users on first launch: right-click → Open to bypass Gatekeeper. Developer ID signing + notarization deferred to pre-GA.
 
-  Secrets checklist:
-  - [ ] `DEVELOPER_ID_APPLICATION_CERT_P12_BASE64` — `base64 < cert.p12`
-  - [ ] `DEVELOPER_ID_APPLICATION_CERT_PASSWORD`
-  - [ ] `DEVELOPER_ID_APPLICATION_IDENTITY` — e.g. `"Developer ID Application: Name (TEAMID)"`
-  - [ ] `NOTARIZE_APPLE_ID`
-  - [ ] `NOTARIZE_TEAM_ID`
-  - [ ] `NOTARIZE_APP_PASSWORD` — app-specific password from appleid.apple.com
-  - [ ] `SPARKLE_PRIVATE_KEY` — export: `.build/artifacts/sparkle/Sparkle/bin/generate_keys --export | base64`
+  Secrets checklist (only 1 needed for v0.1.0):
+  - [ ] `SPARKLE_PRIVATE_KEY` — `.build/artifacts/sparkle/Sparkle/bin/generate_keys --export | base64`
+
+  To set it:
+  ```
+  .build/artifacts/sparkle/Sparkle/bin/generate_keys --export | base64 | pbcopy
+  gh secret set SPARKLE_PRIVATE_KEY   # paste from clipboard
+  ```
+
+  Post-GA (before public launch): add Developer ID cert + notarization secrets, flip `startingUpdater: true` in `TabTypistApp.swift`, re-enable inside-out signing in `release.yml`.
 
 ## Phase 5 — Clean-machine QA
 - [ ] **#11 Clean-machine QA smoke test** — install DMG on a clean Mac/user; grant Accessibility + Input Monitoring; finish onboarding; download a model; test focus → ghost text → Tab accept → Esc dismiss; verify new guards (phrase-loop, junk-run, scaffolding stop, OCR cache) in the wild.
