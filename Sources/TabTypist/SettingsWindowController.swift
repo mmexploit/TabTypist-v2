@@ -91,12 +91,12 @@ struct SettingsView: View {
                 }
 
                 LabeledContent("HuggingFace token") {
-                    SecureField("hf_...", text: $hfToken)
+                    SecureField("hf_... (optional)", text: $hfToken)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 220)
                         .onSubmit { sendHfToken() }
                 }
-                Text("Required for model downloads. Get a read-only token at huggingface.co/settings/tokens.")
+                Text("Not needed for built-in models — they're on public repos. Only required for custom GGUFs from gated or private HuggingFace repos.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

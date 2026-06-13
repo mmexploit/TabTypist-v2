@@ -192,7 +192,7 @@ impl ModelDownloader {
 
     /// Download `entry` to the install directory, sending progress updates.
     /// Supports resumable download via HTTP Range.
-    /// `hf_token` — HuggingFace API token; required for all hf.co downloads as of 2025.
+    /// `hf_token` — optional HuggingFace API token; only needed for gated/private repos.
     pub async fn download(
         &self,
         entry: &ModelEntry,

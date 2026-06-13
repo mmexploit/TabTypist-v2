@@ -26,7 +26,7 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done
 
 ## Phase 3 — Backend / hosted services
 - [ ] **#8 Verify telemetry endpoint + consent** — confirm `https://telemetry.tabtypist.com/v1/events` exists; telemetry opt-in with clear consent.
-- [ ] **#9 Verify model download flow for fresh user** — 6 GGUFs from HuggingFace `mradermacher/*` require an hf.co token. Verify onboarding HF-token flow on a clean install, or self-host the GGUFs.
+- [ ] **#9 Verify model download flow for fresh user** — 6 GGUFs from HuggingFace `mradermacher/*` are on public ungated repos (no token required; verified via 302→public CDN). Verify onboarding download works on a clean install. Self-hosting GGUFs is still preferred for reliability.
 
 ## Phase 4 — Signing & notarization
 - [ ] **#10 Confirm CI signing/notarization + dry-run** — secrets set (`DEVELOPER_ID_APPLICATION_CERT_P12_BASE64`, `..._PASSWORD`, `NOTARIZE_APPLE_ID`, `NOTARIZE_TEAM_ID`, `NOTARIZE_APP_PASSWORD`); hardened-runtime entitlements survive notarization (JIT / unsigned-mem / disable-library-validation); dry-run notarize+staple once.
