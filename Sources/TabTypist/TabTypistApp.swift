@@ -30,8 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
+        // startingUpdater: false — the XPC helper only launches when the user
+        // explicitly requests an update check. With a self-signed dev cert the
+        // XPC trust chain fails immediately and produces an "Unable to Check For
+        // Updates" dialog on every launch. Flip to true once signed with a real
+        // Developer ID cert (Phase 4).
         updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: false,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
