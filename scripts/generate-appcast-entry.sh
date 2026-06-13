@@ -33,7 +33,16 @@ PUBDATE=$(date -u "+%a, %d %b %Y %H:%M:%S +0000")
 DOWNLOAD_URL="https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo 'tabtypist/TabTypist')/releases/download/${TAG}/TabTypist.dmg"
 
 echo "==> Signing DMG with EdDSA key..."
-SIGNATURE=$(SPARKLE_PRIVATE_KEY="${SPARKLE_PRIVATE_KEY:-}" "$SIGN_UPDATE" "$DMG")
+# sign_update reads its key from the Keychain by default; the deprecated -s flag
+# no longer works for newly generated keys. In CI we pipe the base64 private key
+# (from the SPARKLE_PRIVATE_KEY secret) to stdin via --ed-key-file -. On a dev
+# machine with no secret set, fall back to the Keychain. -p prints only the
+# signature (no length= metadata), matching the enclosure template below.
+if [ -n "${SPARKLE_PRIVATE_KEY:-}" ]; then
+    SIGNATURE=$(printf '%s\n' "$SPARKLE_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - -p "$DMG")
+else
+    SIGNATURE=$("$SIGN_UPDATE" -p "$DMG")
+fi
 
 mkdir -p dist
 cat > dist/appcast-entry.xml << EOF
